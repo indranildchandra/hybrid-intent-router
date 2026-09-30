@@ -42,7 +42,7 @@ def main(argv=None) -> int:
 
     batch = [(args.query, json.loads(args.meta))] if args.query else DEMO_REQUESTS
     sink = open(args.jsonl, "a", encoding="utf-8") if args.jsonl else None
-    width = max(len(q) for q, _ in batch) + 1  # full queries and reasons, nothing trimmed
+    width = max(len(q) for q, _ in batch) + 1  # queries and reasons print in full
     try:
         for query, meta in batch:
             d = router.route(query, meta)

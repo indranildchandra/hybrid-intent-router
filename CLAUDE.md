@@ -28,7 +28,7 @@ The runnable companion to Appendix B of the article "Making Intent Routing Expla
 ```bash
 make test-unit                       # must pass before any commit
 make lint                            # shellcheck run.sh (pinned shellcheck-py, in the venv via requirements.txt)
-make test-installer                  # after touching run.sh: 37 end-to-end scenarios (Linux)
+make test-installer                  # after touching run.sh: 37 end-to-end checks (Linux)
 ./run.sh --cpu --skip-clm --test     # full local run on the lightest path
 ```
 

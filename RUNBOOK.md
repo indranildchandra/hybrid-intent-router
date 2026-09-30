@@ -147,7 +147,7 @@ Commands such as `ollama pull` and `ollama list` also need a running server; `ru
 ### Step 5. Get the code
 
 ```bash
-git clone -b feature/first-build https://github.com/indranildchandra/hybrid-intent-router.git
+git clone https://github.com/indranildchandra/hybrid-intent-router.git
 cd hybrid-intent-router
 ```
 
@@ -212,7 +212,7 @@ What each step does:
 8. **Preflight**: the doctor prints `[ok]`, `[warn]` or `[FAIL]` per check and ends with `=> ready`.
 9. **Routing**: the demo set, one line each: the seven Appendix B requests plus an HTTP 429 documentation question that exits at Tier 3A when CLM is served.
 
-The first three routing lines must match exactly: they are deterministic. The last five come from real models, so the probabilities can differ, and a request near a threshold can exit one tier earlier or later. That is expected, not a failure; note it for the article. Every line prints in full: queries and reasons are not trimmed.
+The first three routing lines must match exactly: they are deterministic. The last five come from real models, so the probabilities can differ, and a request near a threshold can exit one tier earlier or later. That is expected, not a failure.
 
 ### Step 8. Manual test checklist
 
