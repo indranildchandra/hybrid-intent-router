@@ -17,12 +17,20 @@
 set -Eeuo pipefail
 
 # ----------------------------------------------------------------------------- constants
+# Pinned versions. OLLAMA_VERSION is what a fresh install gets; an existing Ollama is accepted from
+# MIN_OLLAMA up (0.35 is the first release with /v1/systemone). Python packages are pinned in
+# requirements.txt (make lock); torch is pinned here because its build depends on the mode.
 MIN_OLLAMA="0.35.0"
+OLLAMA_VERSION="${HIR_OLLAMA_VERSION:-0.35.0}"
+TORCH_VERSION="${HIR_TORCH_VERSION:-2.14.0}"
 JEV_MODEL="${HIR_JEV_MODEL:-tev1:0.8b}"
 FALLBACK_MODEL="${HIR_FALLBACK_MODEL:-qwen3:0.6b}"
 CLM_MODEL="${HIR_CLM_MODEL:-clm-encoder}"
 CLM_GGUF_REPO="czl/CLM-v0.1-8B-GGUF"
 CLM_GGUF_FILE="Qwen3-8B-Q8_0-outq2.gguf"
+CLM_GGUF_REVISION="${HIR_CLM_GGUF_REVISION:-main}"   # set to a commit SHA to pin the download
+CLM_GGUF_BYTES=8252495488                            # exact size on the Hub, checked after download
+CLM_HEADS_BYTES=75557149
 CLM_GIT="git+https://github.com/Contrastive-LM/CLM.git@bb42c6c5bf914fd449bed2f6ca65be80602cb1f7"
 CLM_HEADS="${CLM_CKPT_DIR:-$HOME/.cache/clm}/CLM_v0.1-8B.pt"
 CLM_MIN_RAM_GB=15   # a "16 GB" machine reports ~15.x GiB
@@ -183,7 +191,7 @@ setup_python() {
   fi
   local stamp_file="$VENV/.hir-stamp"
   local stamp
-  stamp="$(cat "$ROOT/requirements.txt" <(echo "$MODE|$torch_index") | cksum | awk '{print $1}')"
+  stamp="$(cat "$ROOT/requirements.txt" <(echo "$MODE|$torch_index|$TORCH_VERSION") | cksum | awk '{print $1}')"
   if [[ -x "$PY" && -f "$stamp_file" && "$(cat "$stamp_file")" == "$stamp" ]]; then
     ok "dependencies already installed"
     return
@@ -200,10 +208,11 @@ setup_python() {
     PIP=("$PY" -m pip install -q)
   fi
 
-  log "Installing torch ($([[ -n "$torch_index" ]] && echo "$torch_index" || echo "default wheel"))"
-  if [[ -n "$torch_index" ]]; then "${PIP[@]}" torch --index-url "$torch_index"; else "${PIP[@]}" torch; fi
-  log "Installing requirements"
-  "${PIP[@]}" -r "$ROOT/requirements.txt" pytest
+  log "Installing torch $TORCH_VERSION ($([[ -n "$torch_index" ]] && echo "$torch_index" || echo "default wheel"))"
+  if [[ -n "$torch_index" ]]; then "${PIP[@]}" "torch==$TORCH_VERSION" --index-url "$torch_index"
+  else "${PIP[@]}" "torch==$TORCH_VERSION"; fi
+  log "Installing pinned requirements (requirements.txt)"
+  "${PIP[@]}" -r "$ROOT/requirements.txt"
   echo "$stamp" > "$stamp_file"
   ok "Python dependencies installed"
 }
@@ -219,8 +228,9 @@ install_ollama() {
     local installer="$STATE_DIR/ollama-install.sh"
     curl -fsSL https://ollama.com/install.sh -o "$installer" \
       || die "Could not download the Ollama installer from ollama.com (network or proxy?). Or $manual"
-    sh "$installer" || die "The Ollama installer failed (see the lines above). Or $manual"
+    OLLAMA_VERSION="$OLLAMA_VERSION" sh "$installer" || die "The Ollama installer failed (see the lines above). Or $manual"
   elif have brew; then
+    warn "Homebrew installs its current Ollama, not a pinned version; this repo is tested with $OLLAMA_VERSION."
     brew install ollama || die "brew install ollama failed. Download the app from https://ollama.com/download, or $manual"
   else
     die "Ollama is not installed and Homebrew is not available. Download the app from https://ollama.com/download, or $manual"
@@ -233,6 +243,9 @@ check_client_version() {
   v="$(ollama --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | tail -1 || true)"
   if [[ -n "$v" ]] && ! version_ge "$v" "$MIN_OLLAMA"; then
     die "Ollama client $v is too old; the /v1/systemone API needs $MIN_OLLAMA+. Upgrade: https://ollama.com/download"
+  fi
+  if [[ -n "$v" && "$v" != "$OLLAMA_VERSION" ]]; then
+    ok "Ollama client $v (tested with $OLLAMA_VERSION; newer releases are accepted)"
   fi
 }
 
@@ -312,13 +325,27 @@ model_present() {  # exact tag or tag:latest in /api/tags
   grep -Eq "\"name\": *\"$1(:latest)?\"" <<<"$tags"
 }
 
+PULL_ATTEMPTS="${HIR_PULL_ATTEMPTS:-4}"
+
+pull_one() {  # retries with backoff: registry connections get reset, and Ollama resumes partial pulls
+  local m="$1" attempt delay=2
+  for attempt in $(seq 1 "$PULL_ATTEMPTS"); do
+    if OLLAMA_HOST="$OLLAMA_HOSTPORT" ollama pull "$m"; then return 0; fi
+    if (( attempt < PULL_ATTEMPTS )); then
+      warn "Pulling $m failed (attempt $attempt of $PULL_ATTEMPTS); retrying in ${delay}s. Partial downloads resume."
+      sleep "$delay"; delay=$(( delay * 2 ))
+    fi
+  done
+  die "Could not pull $m from registry.ollama.ai after $PULL_ATTEMPTS attempts. The Ollama server does the download, so this is its network: check \`curl -sI https://registry.ollama.ai/v2/\`, try off VPN or another network, or export HTTPS_PROXY before the server starts. To pull by hand: RUNBOOK.md, section 7, \"Pulling a model fails\"."
+}
+
 pull_models() {
   local m
   for m in "$JEV_MODEL" "$FALLBACK_MODEL"; do
     if [[ "${HIR_USE_TYPESAFE:-0}" == "1" && "$m" == "$JEV_MODEL" ]]; then continue; fi
     if model_present "$m"; then ok "model $m"; else
       log "Pulling $m"
-      OLLAMA_HOST="$OLLAMA_HOSTPORT" ollama pull "$m"
+      pull_one "$m"
     fi
   done
 }
@@ -355,11 +382,16 @@ setup_clm() {
         warn "CLM needs ~${CLM_MIN_DISK_GB} GB free disk (found ${free} GB). Skipping Tier 3A."; return
       fi
       log "Downloading CLM encoder ($CLM_GGUF_REPO/$CLM_GGUF_FILE, 8.25 GB, resumable)"
-      "$PY" - "$CLM_GGUF_REPO" "$CLM_GGUF_FILE" "$dir" 2>"$STATE_DIR/clm-download.log" <<'PYEOF' || { export HIR_DISABLE_CLM=1; warn "CLM download failed ($(tail -n 1 "$STATE_DIR/clm-download.log" | cut -c1-120)); skipping Tier 3A. Details: $STATE_DIR/clm-download.log"; return; }
+      "$PY" - "$CLM_GGUF_REPO" "$CLM_GGUF_FILE" "$dir" "$CLM_GGUF_REVISION" 2>"$STATE_DIR/clm-download.log" <<'PYEOF' || { export HIR_DISABLE_CLM=1; warn "CLM download failed ($(tail -n 1 "$STATE_DIR/clm-download.log" | cut -c1-120)); skipping Tier 3A. Details: $STATE_DIR/clm-download.log"; return; }
 import sys
 from huggingface_hub import hf_hub_download
-hf_hub_download(repo_id=sys.argv[1], filename=sys.argv[2], local_dir=sys.argv[3])
+hf_hub_download(repo_id=sys.argv[1], filename=sys.argv[2], local_dir=sys.argv[3], revision=sys.argv[4])
 PYEOF
+    fi
+    local size; size="$(wc -c < "$dir/$CLM_GGUF_FILE" | tr -d ' ')"
+    if [[ "$size" != "$CLM_GGUF_BYTES" ]]; then
+      export HIR_DISABLE_CLM=1
+      warn "CLM encoder is $size bytes, expected $CLM_GGUF_BYTES (truncated, or a different revision). Delete $dir/$CLM_GGUF_FILE and re-run; skipping Tier 3A."; return
     fi
     # The GGUF already declares last-token pooling, which is what lets Ollama serve it as an embedder
     echo "FROM ./$CLM_GGUF_FILE" > "$dir/Modelfile"
@@ -370,6 +402,11 @@ PYEOF
   if [[ ! -f "$CLM_HEADS" ]]; then
     log "Downloading CLM projection heads into ${CLM_HEADS%/*}"
     "$VENV/bin/clm-download" >/dev/null 2>"$STATE_DIR/clm-download.log" || { export HIR_DISABLE_CLM=1; warn "clm-download failed; skipping Tier 3A. Details: $STATE_DIR/clm-download.log"; return; }
+  fi
+  local hsize; hsize="$(wc -c < "$CLM_HEADS" | tr -d ' ')"
+  if [[ "$hsize" != "$CLM_HEADS_BYTES" ]]; then
+    export HIR_DISABLE_CLM=1
+    warn "CLM projection heads are $hsize bytes, expected $CLM_HEADS_BYTES. Delete $CLM_HEADS and re-run; skipping Tier 3A."; return
   fi
   ok "CLM projection heads"
 }

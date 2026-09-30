@@ -53,16 +53,24 @@ def main() -> int:
             ok = False
         else:
             report("ok", f"Ollama {v} at {OLLAMA}")
-        tags = {m["name"] for m in requests.get(f"{OLLAMA}/api/tags", timeout=5).json().get("models", [])}
+        # name -> digest. Tags can be re-pointed upstream; the digest logged here is what ran.
+        tags = {m["name"]: m.get("digest", "") for m in requests.get(f"{OLLAMA}/api/tags", timeout=5).json().get("models", [])}
+
+        def digest_of(model: str) -> str:
+            d = tags.get(model) or tags.get(f"{model}:latest")
+            return f" (digest {d[:12]})" if d else ""
+
         needed = [FALLBACK_MODEL] + ([] if USE_TYPESAFE else [JEV_MODEL])
         for model in needed:
             present = model in tags or f"{model}:latest" in tags
-            report("ok" if present else "FAIL", f"model {model}" + ("" if present else f" missing: ollama pull {model}"))
+            report("ok" if present else "FAIL",
+                   f"model {model}" + (digest_of(model) if present else
+                                        " missing: run ./run.sh without --no-setup to pull it (or RUNBOOK section 7)"))
             ok &= present
         if not DISABLE_CLM:
             present = CLM_MODEL in tags or f"{CLM_MODEL}:latest" in tags
             report("ok" if present else "warn",
-                   f"model {CLM_MODEL}" + ("" if present else " not served: Tier 3A (CLM) will be skipped"))
+                   f"model {CLM_MODEL}" + (digest_of(CLM_MODEL) if present else " not served: Tier 3A (CLM) will be skipped"))
     except requests.RequestException as exc:
         report("FAIL", f"Ollama not reachable at {OLLAMA} ({type(exc).__name__}); start it with `ollama serve`")
         ok = False

@@ -11,7 +11,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Runs on](https://img.shields.io/badge/runs%20on-CUDA%20%7C%20Apple%20Silicon%20%7C%20CPU-lightgrey)
 
-[Overview](#overview) · [Quickstart](#quickstart) · [The cascade](#the-cascade) · [Walkthrough](#walkthrough-seven-requests-seven-exits) · [Decision records](#what-counts-as-an-explanation) · [Configuration](#configuration) · [Gotchas](#gotchas-and-troubleshooting) · [Runbook](RUNBOOK.md) · [Production](#from-demo-to-production) · [Testing](#testing) · [Layout](#repository-layout)
+[Overview](#overview) · [Quickstart](#quickstart) · [The cascade](#the-cascade) · [Walkthrough](#walkthrough-seven-requests-seven-exits) · [Decision records](#what-counts-as-an-explanation) · [Configuration](#configuration) · [Gotchas](#gotchas-and-troubleshooting) · [Runbook](RUNBOOK.md) · [Production](#from-demo-to-production) · [Testing](#testing) · [FAQ](#faq) · [Sources](#sources)
 
 </div>
 
@@ -45,6 +45,8 @@ cd hybrid-intent-router
 
 That is the whole setup. The script is idempotent: the second run skips every install, pull and download already done, and goes straight to routing.
 
+**First time on this machine?** Follow [`RUNBOOK.md`, section 1](RUNBOOK.md#1-first-local-run-step-by-step): nine steps from checking prerequisites and installing Ollama, through the first run and the exact output to expect, to a manual test checklist.
+
 ### Prerequisites
 
 | Requirement | Needed for | Notes |
@@ -62,9 +64,9 @@ That is the whole setup. The script is idempotent: the second run skips every in
 ### What `run.sh` does
 
 1. Detects the platform, GPU (`nvidia-smi` or Apple Silicon) and RAM. No usable GPU: it falls back to CPU automatically, exactly as if you had passed `--cpu`.
-2. Creates a Python environment per mode (`.venv-gpu` or `.venv-cpu`) and installs PyTorch (CUDA/MPS build for GPU, CPU wheel for CPU) and the requirements. Skipped on later runs unless `requirements.txt`, the mode or `TORCH_INDEX_URL` changed.
+2. Creates a Python environment per mode (`.venv-gpu` or `.venv-cpu`) and installs torch 2.14.0 (CUDA/MPS build for GPU, CPU wheel for CPU), then the exact versions in `requirements.txt`. Skipped on later runs unless `requirements.txt`, the mode or `TORCH_INDEX_URL` changed.
 3. Installs Ollama if missing, checks the client and the server are both 0.35 or later, and starts a server only if none is running: the standard port 11434 in GPU mode, or a private CPU-only instance on port 11435 in CPU mode (every accelerator hidden). A server that was already running is reused and left running. A server `run.sh` started is stopped when the script exits, on success, failure, Ctrl-C or SIGTERM, model runners included (`--keep-ollama` to leave it up).
-4. Pulls `tev1:0.8b` (Jev-compatible decision model) and `qwen3:0.6b` (Tier 4 stand-in).
+4. Pulls `tev1:0.8b` (Jev-compatible decision model) and `qwen3:0.6b` (Tier 4 stand-in), retrying each pull up to 4 times with backoff when the registry resets the connection.
 5. If RAM (15 GiB) and disk (10 GB free) allow, installs the CLM client without vLLM (needs `git`), downloads the 8-bit CLM encoder GGUF (8.25 GB, resumable), registers it with Ollama as `clm-encoder` and fetches the CLM projection heads. Any failure here skips Tier 3A with a one-line warning instead of stopping the run.
 6. Downloads the pinned Laya checkpoint from Hugging Face.
 7. Runs the preflight doctor, then routes the Appendix B demo set.
@@ -234,7 +236,23 @@ Every knob is an environment variable, read in `src/hybrid_intent_router/config.
 | `HIR_TYPESAFE_MODEL` | `jev-1.13.0` | Managed Jev model, pinned |
 | `TORCH_INDEX_URL` | per mode | Override the PyTorch wheel index: the CPU index is used for `--cpu` on Linux, PyPI otherwise. For an older NVIDIA driver, pick the `cuXXX` index that matches it from https://pytorch.org/get-started/locally/ |
 | `HF_TOKEN` | unset | Hugging Face token, if anonymous downloads get rate-limited |
+| `HIR_TORCH_VERSION` | `2.14.0` | torch version `run.sh` installs |
+| `HIR_OLLAMA_VERSION` | `0.35.0` | Ollama version a fresh Linux install gets |
+| `HIR_PULL_ATTEMPTS` | `4` | Attempts per model pull, with backoff (2s, 4s, 8s) |
+| `HIR_CLM_GGUF_REVISION` | `main` | Hugging Face revision of the CLM encoder GGUF |
 | `HIR_LOG_LEVEL` | `WARNING` | Python log level for the router and its libraries (`DEBUG` shows every HTTP request) |
+
+### Pinned versions
+
+Every install is pinned so that a run can be reproduced, and what could not be pinned is recorded instead:
+
+- **Python packages:** `requirements.txt` holds the exact version of every package, transitive ones included, for Python 3.10 to 3.13 on Linux and macOS (environment markers pick the right line). It is generated from the ranges in `pyproject.toml` by `make lock`, which needs `uv`. This is the only requirements file; `run.sh` and CI both install it.
+- **torch:** `2.14.0` (`TORCH_VERSION` in `run.sh`), installed before `requirements.txt` because the build depends on the mode. Its GPU libraries come with the build and are deliberately not in the lock, so CPU installs stay small.
+- **Ollama:** a fresh install on Linux gets exactly `0.35.0` (`OLLAMA_VERSION` in `run.sh`). An Ollama you already have is accepted from 0.35.0 up, with a note if it differs. Homebrew on macOS installs its current version and says so.
+- **Laya:** `laya==0.3.22`, with both checkpoints pinned to reviewed commits (below).
+- **TypeSafe SDK:** `typesafe-sdk==0.7.2`. **CLM client:** a fixed git commit.
+- **Ollama models:** `tev1:0.8b`, `qwen3:0.6b` and `clm-encoder` are tags, which can be re-pointed upstream. The preflight prints each model's digest into the run log, so every run records exactly which weights it used.
+- **CLM encoder and heads:** downloaded from Hugging Face and checked against their exact sizes (8,252,495,488 and 75,557,149 bytes). Set `HIR_CLM_GGUF_REVISION` to a commit to pin the encoder download.
 
 Laya checkpoints are pinned to the reviewed commits shipped in `laya.PINNED_REVISIONS` for laya 0.3.22, loaded from their per-checkpoint repositories (`standalone_repos=True`) because that is what those commits refer to, and the CLM client is pinned to a commit. Pinning is part of the explanation, not housekeeping.
 
@@ -246,6 +264,7 @@ Laya checkpoints are pinned to the reviewed commits shipped in `laya.PINNED_REVI
 
 - **`Ollama server ... is 0.3x; need 0.35+` while `ollama --version` looks new.** A system service (Linux systemd, or the macOS app) is still running the old binary. Restart it: `sudo systemctl restart ollama` on Linux, quit and reopen the app on macOS.
 - **Models pulled twice.** The Linux installer's systemd service stores models under `/usr/share/ollama/.ollama/models`. The private CPU instance that `run.sh --cpu` starts runs as you and uses `~/.ollama/models`. Each server needs its own copy; `run.sh` pulls through whichever server it is about to use.
+- **`pull model manifest ... connection reset by peer`.** The network between the Ollama server and `registry.ollama.ai` dropped the connection, common on corporate networks and VPNs. `run.sh` retries each pull 4 times; if it still fails, see "Pulling a model fails" in [`RUNBOOK.md`](RUNBOOK.md) section 7.
 - **Where the logs are.** Every run writes its full output to `.run/run-<timestamp>.log` (and `.run/latest.log`) in the repo root. When `run.sh` starts the Ollama server itself, the server log is `.run/ollama-gpu.log` or `.run/ollama-cpu.log`. A server that was already running is not ours to log: `journalctl -u ollama` on Linux, `~/.ollama/logs/server.log` on macOS. [`RUNBOOK.md`](RUNBOOK.md) has the full map.
 - **Port 11434 or 11435 in use by something that is not Ollama.** The script will fail with a pointer to `.run/ollama-<mode>.log`. Free the port, or point `HIR_OLLAMA_URL` at a server you run yourself.
 - **`Could not create a venv` on Debian/Ubuntu.** `sudo apt install python3-venv` (or `python3.12-venv`).
@@ -281,9 +300,19 @@ Laya checkpoints are pinned to the reviewed commits shipped in `laya.PINNED_REVI
   theta=0.90  coverage= 11.2%  precision= 92.7%
   ```
 
-- **Audit what you intercept, not only what falls through.** A request routed wrongly at Tier 2 with 0.9 confidence never reaches a tier that could disagree. `HybridRouter.shadow_queue` holds the sampled confident decisions; `shadow_review()` re-checks them with Tier 4 off the request path. Tier 4 makes mistakes too, so send disagreements to a person and alert on the adjudicated rate.
 - **Push patterns down a tier.** The Tier 4 log is your training set for Tiers 2 and 3, with one caveat: LLM labels carry LLM mistakes, and a Tier 2 model trained on them repeats those mistakes with more confidence. Audit a sample before every retrain.
 - **Latency-critical intents.** The cascade runs in sequence, so a request that fails at Jev has paid 70 to 500 ms before Tier 4 starts. For those intents, run Tier 2 and Tier 3 in parallel and take the first confident answer.
+
+### Shadow sampling: auditing what the cascade intercepts
+
+Most cascade monitoring watches the traffic that falls through to the expensive tiers. The dangerous traffic is the traffic that does not. A request routed wrongly at Tier 2 with 0.9 confidence exits there, and no tier below it ever gets a chance to disagree. Fall-through metrics cannot see that mistake; nothing downstream can.
+
+Shadow sampling is the fix. A random share of confident decisions from Tiers 2 and 3 is copied, off the request path, to Tier 4 for a second opinion. The customer's request is never delayed: the original route stands, and the second opinion only feeds monitoring.
+
+- **`HIR_SHADOW_RATE`** (default `0.02`, or `--shadow-rate` on the command line) is the share of those confident decisions that get re-checked. Tier 1 is never sampled, because a deterministic rule has nothing to be second-guessed on. Tier 4 exits are never sampled either, because nothing sits below them.
+- **In this repo** the sampled decisions go to `HybridRouter.shadow_queue`, and the CLI re-checks them with `shadow_review()` after the demo set. `./run.sh --no-setup --shadow-rate 1.0` shows it on every confident exit. In production that queue is a real queue, drained by a background worker.
+- **A disagreement is a question, not a verdict.** Tier 4 makes mistakes too. Send each disagreement to a person, and alert on the adjudicated error rate per tier and per intent. A disagreement rate that rises while reported confidence stays flat is calibration drift that would otherwise surface as a customer complaint.
+- **What it costs.** Sampling 2% of confident decisions sends roughly 2% of that traffic to the most expensive tier. At a million routed requests a day that is at most 20,000 extra Tier 4 calls (fewer, since Tier 1 and Tier 4 exits are never sampled), all off the request path. Raise the rate after a release or a threshold change, lower it once the adjudicated rate is stable.
 
 What to watch at the gateway: decision-record completeness (anything below 100% is an explainability outage), tier intercept ratios (a week-on-week rise in Tier 4 share is an incident), adjudicated shadow disagreement per tier and intent, ECE drift on a labelled sample, and fallback storms when an upstream tier degrades and its abstention rate spikes.
 
@@ -294,59 +323,69 @@ Everything operational is in one place, [`RUNBOOK.md`](RUNBOOK.md): the first lo
 ## Testing
 
 ```bash
-make test         # every suite; the live suite runs only if an Ollama is already up on HIR_OLLAMA_URL (default :11434)
-make test-unit    # offline: Tier 1 rules, Tier 2 models, calibration, cascade ordering (model tiers faked)
-make test-live    # the real cascade via run.sh: Ollama started only if needed, every suite, then stopped (make test-live-cpu to force CPU)
-make test-installer  # run.sh end to end against a stand-in Ollama and Laya: 35 checks, no model downloads (Linux; installs .venv-cpu on first use)
-make lint         # shellcheck run.sh
+make test            # every suite; the live suite runs only if an Ollama is already up on HIR_OLLAMA_URL (default :11434)
+make test-unit       # offline: Tier 1 rules, Tier 2 models, calibration, the CLI, cascade ordering (model tiers faked)
+make test-live       # the real cascade via run.sh: Ollama started only if needed, every suite, then stopped (test-live-cpu to force CPU)
+make test-installer  # run.sh end to end against a stand-in Ollama and Laya: 37 checks, no model downloads (Linux)
+make lint            # shellcheck run.sh
 ```
 
-- **`unit`**: the CLI (`--query`, `--meta`, `--jsonl`, the seven-request demo set), the `/cancellation` prefix regression, the input cap, TF-IDF and CatBoost reproducing the article's probabilities and SHAP attribution, ECE and the threshold sweep reproducing the article's numbers, and the cascade contract (guardrail overrides Tier 1, tiers fall through only on abstention, every exit writes a complete record, shadow sampling only on confident upper tiers).
-- **`live`**: the guardrail blocks the privilege-escalation request and every demo request exits with a target and a reason.
-- **Installer scenarios** (`tests/installer/`): the real `run.sh` against a stand-in Ollama that serves the same HTTP endpoints (`/api/tags`, `/v1/systemone` in the TypeSafe SDK's schema, `/api/chat`, `/v1/embeddings`) and a stand-in Laya. It covers install idempotency, GPU-to-CPU fallback, reusing a running server and leaving it alone, stopping a server it started on success, failure, Ctrl-C (a real `^C` through a pseudo-terminal) and SIGTERM with runner children included, `--keep-ollama`, `HIR_OLLAMA_URL`, missing models, a port held by something else, run-log retention and colour stripping, router argument pass-through, and the make targets.
+- **`unit`**: the CLI (`--query`, `--meta`, `--jsonl`, the seven-request demo set), the `/cancellation` prefix regression, the input cap, TF-IDF and CatBoost reproducing the article's probabilities and SHAP attribution, the Tier 2 threshold edges the runbook relies on, ECE and the threshold sweep reproducing the article's numbers, and the cascade contract (guardrail overrides Tier 1, tiers fall through only on abstention, every exit writes a complete record, shadow sampling only on confident upper tiers).
+- **`live`**: against the real models, the guardrail blocks the privilege-escalation request and every demo request exits with a target and a reason.
+- **Installer scenarios** (`tests/installer/`): the real `run.sh` against a stand-in Ollama that serves the same HTTP endpoints (`/api/tags`, `/v1/systemone` in the TypeSafe SDK's schema, `/api/chat`, `/v1/embeddings`) and a stand-in Laya. They cover install idempotency, GPU-to-CPU fallback, reusing a running server and leaving it alone, stopping a server it started on success, failure, Ctrl-C (a real `^C` through a pseudo-terminal) and SIGTERM with runner children included, `--keep-ollama`, `HIR_OLLAMA_URL`, missing models, pull retries after connection resets, a port held by something else, run-log retention and colour stripping, router argument pass-through, and the make targets.
 
-CI (`.github/workflows/ci.yml`) runs the unit suite on Python 3.11 and 3.12, checks the calibration output against the article, shellchecks `run.sh`, and runs the installer scenarios.
-
----
-
-## Repository layout
-
-| Path | Role |
-|---|---|
-| `run.sh` | One-click installer and runner. GPU by default with CPU fallback, `--cpu` to force CPU, `--skip-clm` in either mode |
-| `Makefile` | The same flows as named targets (`make help`) |
-| `pyproject.toml`, `requirements.txt`, `requirements-dev.txt` | Package metadata and dependencies (torch is installed by `run.sh`); `requirements-dev.txt` is the CI set for the unit suite |
-| `pytest.ini` | Test config: `src/` on the path, `unit` and `live` markers |
-| `.github/workflows/ci.yml` | Unit suite on 3.11 and 3.12, calibration check, shellcheck, installer scenarios |
-| `src/hybrid_intent_router/config.py` | Every knob, read from `HIR_*` environment variables |
-| `src/hybrid_intent_router/records.py` | The decision record every exit writes |
-| `src/hybrid_intent_router/tier1_deterministic.py` | Exact-token command match and bounded regex |
-| `src/hybrid_intent_router/tier2_classical.py` | TF-IDF + logistic regression, CatBoost with SHAP |
-| `src/hybrid_intent_router/system_one.py` | Laya: the guardrail and Tier 3B typed questions + policy |
-| `src/hybrid_intent_router/tier3a_clm.py` | CLM dual-encoder branch, skipped when the encoder is not served |
-| `src/hybrid_intent_router/tier3c_jev.py` | Jev on the 25-intent catalog via the TypeSafe SDK |
-| `src/hybrid_intent_router/tier4_fallback.py` | Schema-constrained generative fallback |
-| `src/hybrid_intent_router/cascade.py` | `HybridRouter`: ordering, guardrail, shadow sampling |
-| `src/hybrid_intent_router/calibration.py` | ECE and threshold sweep |
-| `src/hybrid_intent_router/doctor.py` | Preflight checks |
-| `src/hybrid_intent_router/__main__.py` | CLI: demo set, `--query`, `--meta`, `--jsonl`, `--shadow-rate`, `HIR_LOG_LEVEL` |
-| `tests/` | `unit` and `live` suites |
-| `tests/installer/` | `run.sh` scenarios against a stand-in Ollama and Laya |
-| `RUNBOOK.md` | First local run step by step, everyday commands, tier-by-tier walkthrough, logs, debugging |
-| `CLAUDE.md` | Context for coding agents working in this repo |
-| `.run/`, `.venv-gpu/`, `.venv-cpu/`, `models/` | Created at runtime (logs, environments, CLM encoder); gitignored |
+CI (`.github/workflows/ci.yml`) installs the pinned `requirements.txt` on Python 3.11 and 3.12, runs the unit suite, checks the calibration output against the article, shellchecks `run.sh`, and runs the installer scenarios.
 
 ---
 
-## Notes
+## FAQ
 
 **Does anything leave the machine?** No, by default. Laya runs in-process, Ollama serves every other model locally, and the only network traffic is the first-run download of packages and weights. Managed Jev is opt-in.
 
+**What has been verified, and what has not?** Tier 1 and Tier 2 outputs, the calibration numbers and the cascade contract are pinned by unit tests and reproduce the article exactly. `run.sh` is verified end to end against stand-ins for Ollama and Laya. The numbers from the real Laya, `tev1`, `qwen3` and CLM models depend on hardware and model versions, which is why the walkthrough shows them as approximate.
+
 **Why is the Tier 4 stand-in so small?** It is a placeholder for your frontier model, chosen so the demo runs on a laptop. The architecture point is that it is reached rarely, not that it is smart.
+
+**Why does CLM need about 16 GB of RAM?** Its encoder is an 8-bit Qwen3-8B, an 8.25 GB file that has to sit in memory. It is a branch for large, static action catalogs, not a cheaper step in front of Laya; below 15 GiB of RAM `run.sh` skips it and the cascade runs without it.
 
 **Is the cost argument real?** The ordering is. Tiers 1 and 2 run on CPU you already pay for; Laya on one T4 serves 103 to 332 questions per second; Jev bills input tokens only; a frontier model costs roughly 60x to 300x more per request than Jev at the same input size. Absolute prices move every quarter. Swap in your contract prices and the ratios move; the ordering does not. The method is in Appendix A of the article.
 
-**Sources.** Laya: https://github.com/NandhaKishorM/laya · Jev and System One: https://typesafe.ai · Ollama decision models: https://ollama.com/blog/ollama-now-supports-jev-style-decision-models · CLM: https://github.com/Contrastive-LM/CLM and https://huggingface.co/czl/CLM-v0.1-8B-GGUF · Overconfidence in modern networks: https://arxiv.org/abs/1706.04599 · CatBoost inference: https://catboost.ai/news/best-in-class-inference-and-a-ton-of-speedups · scikit-learn inference cost: https://scikit-learn.org/stable/computing/computational_performance.html
+---
+
+## Sources
+
+**Classical ML**
+
+- CatBoost inference speed: https://catboost.ai/news/best-in-class-inference-and-a-ton-of-speedups
+- scikit-learn prediction cost and feature extraction: https://scikit-learn.org/stable/computing/computational_performance.html
+
+**System One decision models**
+
+- Laya (latency, throughput, calibration, label-count limits): https://github.com/NandhaKishorM/laya
+- Laya checkpoints: https://huggingface.co/convaiinnovations/laya
+- Jev and the System One API: https://typesafe.ai
+- Jev review, pricing and explainability limits: https://simonwillison.net/2026/Sep/21/jev/
+- A practical guide to Jev: https://dev.to/valyuai/how-to-use-jev-a-practical-guide-to-typesafes-system-one-model-g5e
+- Reinforcement Learning for Calibrated Decisions (RLCD): https://www.sanity.io/glossary/rlcd-reinforcement-learning-for-calibrated-decisions
+- Ollama support for Jev-style decision models: https://ollama.com/blog/ollama-now-supports-jev-style-decision-models
+- Prompt injection against Jev: https://venturebeat.com/security/companies-are-putting-jev-in-charge-of-ai-agent-decisions-and-prompt-injection-can-influence-the-verdict
+
+**Contrastive dual-encoders (CLM)**
+
+- CLM source and serving engine: https://github.com/Contrastive-LM/CLM
+- CLM 8-bit GGUF encoder: https://huggingface.co/czl/CLM-v0.1-8B-GGUF
+- CLM architecture and speedups: https://venturebeat.com/technology/stanford-and-nvidias-open-clm-8b-caches-reusable-agent-actions-and-runs-up-to-9x-faster-than-jev-in-tests
+- Self-hosting CLM: https://wavect.io/blog/clm-8b-self-hosting-action-cache-verifier/
+
+**Calibration**
+
+- On Calibration of Modern Neural Networks: https://arxiv.org/abs/1706.04599
+
+**Cost ratios** (official list prices at the time of writing)
+
+- T4 GPU pricing: https://cloud.google.com/products/compute/gpus-pricing
+- Frontier model pricing: https://platform.claude.com/docs/en/about-claude/pricing
+- Cross-checks: https://openai.com/api/pricing/ and https://ai.google.dev/gemini-api/docs/pricing
 
 ---
 

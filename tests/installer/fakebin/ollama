@@ -6,7 +6,13 @@ STATE="${STUB_STATE:?STUB_STATE must be set}"; mkdir -p "$STATE"
 case "$1" in
   --version) echo "ollama version is ${STUB_VERSION:-0.35.2}" ;;
   serve) exec env STUB_STATE="$STATE" python3 "$HERE/stub_ollama_server.py" "${OLLAMA_HOST##*:}" ;;
-  pull) echo "pulling $2 (stub)"; touch "$STATE/${2//:/__}" ;;
+  pull)
+    # STUB_PULL_FAIL=N fails the first N pulls (a registry resetting the connection); "always" never succeeds
+    n=$(cat "$STATE/.pull_attempts" 2>/dev/null || echo 0); echo $((n + 1)) > "$STATE/.pull_attempts"
+    if [[ "${STUB_PULL_FAIL:-0}" == "always" || $n -lt ${STUB_PULL_FAIL:-0} ]]; then
+      echo "Error: pull model manifest: read: connection reset by peer (stub)" >&2; exit 1
+    fi
+    echo "pulling $2 (stub)"; touch "$STATE/${2//:/__}" ;;
   create) echo "creating $2 (stub)"; touch "$STATE/${2}__latest" ;;
   *) echo "stub ollama $*" ;;
 esac

@@ -1,4 +1,4 @@
-.PHONY: help setup setup-cpu run run-cpu check check-cpu test test-unit test-live test-live-cpu test-installer calibration lint clean clean-all
+.PHONY: lock help setup setup-cpu run run-cpu check check-cpu test test-unit test-live test-live-cpu test-installer calibration lint clean clean-all
 
 PY_GPU := .venv-gpu/bin/python
 PY_CPU := .venv-cpu/bin/python
@@ -27,6 +27,9 @@ help:
 	@echo ""
 	@echo "    make clean         Remove caches and every log under .run/"
 	@echo "    make clean-all     clean + both venvs and the downloaded CLM encoder"
+	@echo ""
+	@echo "  Dependencies"
+	@echo "    make lock          Regenerate the pinned requirements.txt from pyproject.toml (needs uv)"
 	@echo ""
 	@echo "  Anything more specific: ./run.sh --help"
 
@@ -68,6 +71,21 @@ calibration:
 
 lint:
 	@command -v shellcheck >/dev/null && shellcheck -S warning run.sh || echo "shellcheck not installed; skipping"
+
+# torch and its GPU-specific dependencies stay out of the lock: run.sh installs the torch build
+# that matches the mode (TORCH_VERSION in run.sh), and each build brings its own GPU libraries.
+TORCH_GPU_DEPS := cuda-bindings cuda-pathfinder cuda-toolkit nvidia-cublas nvidia-cuda-cupti nvidia-cuda-nvrtc \
+	nvidia-cuda-runtime nvidia-cudnn-cu13 nvidia-cufft nvidia-cufile nvidia-curand nvidia-cusolver nvidia-cusparse \
+	nvidia-cusparselt-cu13 nvidia-nccl-cu13 nvidia-nvjitlink nvidia-nvshmem-cu13 nvidia-nvtx triton
+lock:
+	@command -v uv >/dev/null || { echo "make lock needs uv: https://docs.astral.sh/uv/"; exit 1; }
+	@head -n 8 requirements.txt > .requirements.header
+	echo "torch==$$(sed -n 's/^TORCH_VERSION="$${HIR_TORCH_VERSION:-\(.*\)}"/\1/p' run.sh)" > .torch-constraint.txt
+	uv pip compile pyproject.toml --extra dev --universal --python-version 3.10 --no-header \
+		-c .torch-constraint.txt --no-emit-package torch $(addprefix --no-emit-package ,$(TORCH_GPU_DEPS)) \
+		-o .requirements.body
+	cat .requirements.header .requirements.body > requirements.txt
+	@rm -f .requirements.header .requirements.body .torch-constraint.txt
 
 clean:
 	rm -rf .pytest_cache .run catboost_info

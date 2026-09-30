@@ -13,6 +13,7 @@ The runnable companion to Appendix B of the article "Making Intent Routing Expla
 - Tier 1 matches the whole first token, never a prefix (`/cancellation policy?` must return None), and caps input at 2,000 chars before any regex.
 - Every exit returns `records.record(...)`: `ts`, `state_sha256`, `tier`, `model`, `policy_version`, `target`, `reason`. Reasons are rendered from rules and probabilities, never generated (Tier 4 excepted, and labelled as such).
 - Models and checkpoints stay pinned (Laya revisions in `config.py`, loaded with `standalone_repos=True` because the SHAs are per repository; laya==0.3.22; CLM commit in `run.sh`).
+- Versions stay pinned: `requirements.txt` is the single, generated lock (edit ranges in `pyproject.toml`, then `make lock`; never hand-edit it); torch and Ollama versions live in `run.sh` (`TORCH_VERSION`, `OLLAMA_VERSION`).
 - Tier 1 and Tier 2 outputs must reproduce the article exactly; `tests/test_tier2_and_policy.py` pins them.
 
 ## Layout
@@ -27,7 +28,7 @@ The runnable companion to Appendix B of the article "Making Intent Routing Expla
 ```bash
 make test-unit                       # must pass before any commit
 make lint                            # shellcheck run.sh
-make test-installer                  # after touching run.sh: 35 end-to-end scenarios (Linux)
+make test-installer                  # after touching run.sh: 37 end-to-end scenarios (Linux)
 ./run.sh --cpu --skip-clm --test     # full local run on the lightest path
 ```
 

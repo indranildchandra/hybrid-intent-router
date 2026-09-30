@@ -2,7 +2,7 @@
 # Installer scenarios: drives the real run.sh end to end against a stand-in Ollama (HTTP server
 # with the same endpoints) and a stand-in Laya, so no model downloads are needed. Checks install
 # idempotency, the Ollama ownership rules (reuse vs start/stop, Ctrl-C, SIGTERM, failures), logs,
-# argument pass-through, error paths and the make targets. Prints PASS/FAIL per check.
+# pull retries, argument pass-through, error paths and the make targets. Prints PASS/FAIL per check.
 #
 #   bash tests/installer/run_scenarios.sh     (Linux; needs setsid, pgrep/pkill and script)
 #
@@ -72,9 +72,18 @@ pkill -f stub_ollama_server.py; pkill -f "^sleep 1000$"; sleep 1
 echo "--- S10 missing model"
 rm -f "$STUB_STATE/tev1__0.8b"
 ./run.sh --no-setup > "$S/s10.out" 2>&1; R=$?
-check "doctor names the missing model, exit 1, server stopped" '[[ $R == 1 ]] && grep -q "model tev1:0.8b missing: ollama pull tev1:0.8b" "$S/s10.out" && ! up'
+check "doctor names the missing model, exit 1, server stopped" '[[ $R == 1 ]] && grep -q "model tev1:0.8b missing: run ./run.sh without --no-setup" "$S/s10.out" && ! up'
 ./run.sh --setup-only > "$S/s10b.out" 2>&1
 check "setup pulls it back" 'grep -q "Pulling tev1:0.8b" "$S/s10b.out" && [[ -f "$STUB_STATE/tev1__0.8b" ]]'
+
+echo "--- S10c pull retries"
+rm -f "$STUB_STATE/tev1__0.8b" "$STUB_STATE/.pull_attempts"
+STUB_PULL_FAIL=2 ./run.sh --setup-only > "$S/s10c.out" 2>&1; R=$?
+check "two connection resets, then the pull succeeds on retry" '[[ $R == 0 ]] && [[ $(grep -c "retrying in" "$S/s10c.out") == 2 ]] && [[ -f "$STUB_STATE/tev1__0.8b" ]]'
+rm -f "$STUB_STATE/tev1__0.8b" "$STUB_STATE/.pull_attempts"
+STUB_PULL_FAIL=always HIR_PULL_ATTEMPTS=2 ./run.sh --setup-only > "$S/s10d.out" 2>&1; R=$?
+check "persistent failure: clear message, exit 1, server stopped" '[[ $R == 1 ]] && grep -q "Could not pull tev1:0.8b from registry.ollama.ai after 2 attempts" "$S/s10d.out" && ! up && ! ours'
+rm -f "$STUB_STATE/.pull_attempts"; touch "$STUB_STATE/tev1__0.8b"
 
 echo "--- S11 router args pass through"
 rm -f "$S/d.jsonl"

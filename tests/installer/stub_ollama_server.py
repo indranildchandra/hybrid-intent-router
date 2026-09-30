@@ -4,7 +4,9 @@ STATE = os.environ["STUB_STATE"]
 PORT = int(sys.argv[1])
 
 def models():
-    return [{"name": n.replace("__", ":")} for n in sorted(os.listdir(STATE))] if os.path.isdir(STATE) else []
+    import hashlib
+    return [{"name": n.replace("__", ":"), "digest": hashlib.sha256(n.encode()).hexdigest()}
+            for n in sorted(os.listdir(STATE)) if not n.startswith(".")] if os.path.isdir(STATE) else []
 
 class H(http.server.BaseHTTPRequestHandler):
     def _send(self, code, obj):

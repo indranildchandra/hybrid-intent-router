@@ -190,10 +190,10 @@ How do I set up Okta for our w | TIER_4_LLM_FALLBACK  | account_access_queue    
 What each step does:
 
 1. **Detecting hardware.** GPU (`nvidia-smi` or Apple Silicon), RAM, OS. No GPU: `warn ... Falling back to CPU`.
-2. **Python environment.** Creates `.venv-gpu` or `.venv-cpu` and installs torch (CUDA/MPS build or CPU wheel) and the requirements. Skipped on later runs (`ok dependencies already installed`) unless `requirements.txt`, the mode or `TORCH_INDEX_URL` changed.
+2. **Python environment.** Creates `.venv-gpu` or `.venv-cpu`, installs torch 2.14.0 (CUDA/MPS build or CPU wheel), then the exact versions pinned in `requirements.txt`. Skipped on later runs (`ok dependencies already installed`) unless `requirements.txt`, the mode or `TORCH_INDEX_URL` changed.
 3. **Installing Ollama**, only if `ollama` is not on `PATH` (Step 3 explains the manual route).
 4. **Starting Ollama**, only if nothing is answering on the port (section 4; Step 4 shows how to start it yourself).
-5. **Pulling models**: `tev1:0.8b` and `qwen3:0.6b`, skipped when already present.
+5. **Pulling models**: `tev1:0.8b` and `qwen3:0.6b`, skipped when already present. Each pull is retried up to 4 times with backoff if the registry resets the connection.
 6. **CLM encoder**, if RAM (15 GiB) and disk (10 GB free) allow and `--skip-clm` is not set: the CLM client (needs `git`), the 8.25 GB GGUF download (resumable), `ollama create clm-encoder`, the projection heads. A failure prints one `warn` line, writes the details to `.run/clm-install.log` or `.run/clm-download.log`, and skips Tier 3A; the run continues.
 7. **Fetching the pinned Laya checkpoint** from Hugging Face. A failure stops the run and writes the details to `.run/laya-download.log`.
 8. **Preflight**: the doctor prints `[ok]`, `[warn]` or `[FAIL]` per check and ends with `=> ready`.
@@ -538,9 +538,21 @@ tail -n 50 .run/latest.log
 **`Ollama server at ... is 0.3x; need 0.35+`**
 - A system service is still running the old binary. Linux: `sudo systemctl restart ollama`. macOS: quit and reopen the Ollama app.
 
-**`[FAIL] model tev1:0.8b missing`**
-- Run without `--no-setup` so the pull step runs, or pull by hand against the right server: `OLLAMA_HOST=127.0.0.1:11434 ollama pull tev1:0.8b` (`:11435` for CPU).
-- `ollama list` against the same host shows what that server has. The system service and the CPU instance have separate model stores.
+**`[FAIL] model tev1:0.8b missing: run ./run.sh without --no-setup to pull it`**
+- `--no-setup` never pulls. Run `./run.sh` without it, or pull by hand as below.
+- `ollama list` against the same server shows what it has. The system service and the CPU instance (`:11435`) have separate model stores.
+
+**Pulling a model fails (`pull model manifest ... connection reset by peer`, or `fail Could not pull ...`)**
+- The Ollama server downloads models from `registry.ollama.ai`, and something between the server and the registry dropped the connection. On corporate networks and VPNs this is the usual cause. `run.sh` has already retried 4 times.
+- Check the path: `curl -sI https://registry.ollama.ai/v2/ | head -1`. Any HTTP status line means it is reachable; a reset or a timeout means the network is blocking it.
+- Try off the VPN or on another network. If you need a proxy, export `HTTPS_PROXY` in the shell that starts the server: the server does the download, not the `ollama pull` command. For the macOS app or the Linux service, set it in their environment instead.
+- Pull by hand, with a server running ([Step 4](#step-4-start-the-ollama-server-if-it-is-not-already-running)); re-run a pull that fails, as partial downloads resume:
+
+  ```bash
+  ollama serve                                      # second terminal, or the app / service
+  ollama pull tev1:0.8b && ollama pull qwen3:0.6b    # add OLLAMA_HOST=127.0.0.1:11435 for the --cpu server
+  ./run.sh --no-setup --skip-clm --test             # reuses your server; pulls nothing
+  ```
 
 **`[FAIL] HIR_DEVICE=cuda but torch cannot see a CUDA device`**
 - `nvidia-smi` should list the GPU. If it does, the torch build and driver disagree:
