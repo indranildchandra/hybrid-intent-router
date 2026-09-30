@@ -1,0 +1,56 @@
+name: CI
+
+# Runs on every push and PR. Exercises everything that does not need a GPU, Ollama or the
+# Hugging Face checkpoints: Tier 1 rules, Tier 2 models, the calibration tooling, and the full
+# cascade ordering with every model tier faked. The `live` suite auto-skips here.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # The same pinned requirements.txt run.sh installs. torch first, from the CPU index: laya
+      # depends on it, and without it pip would pull the multi-GB CUDA build from PyPI.
+      - name: Install deps (CPU torch, then the pinned requirements.txt; no models)
+        run: |
+          python -m pip install "torch==$(sed -n 's/^TORCH_VERSION="${HIR_TORCH_VERSION:-\(.*\)}"/\1/p' run.sh)" --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+
+      - name: Unit tests
+        run: python -m pytest -v -m unit
+
+      - name: Calibration example reproduces the article
+        run: PYTHONPATH=src python -m hybrid_intent_router.calibration | tee /tmp/cal.txt && grep -q "ECE = 0.061" /tmp/cal.txt
+
+  installer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: run.sh --help
+        run: ./run.sh --help
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The shellcheck pinned in requirements.txt, not whichever one the runner image ships
+      - name: shellcheck run.sh
+        run: |
+          python -m pip install "$(grep -E '^shellcheck-py==' requirements.txt)"
+          shellcheck -S warning run.sh
+      - name: Installer scenarios (real run.sh, stand-in Ollama and Laya, no model downloads)
+        run: bash tests/installer/run_scenarios.sh

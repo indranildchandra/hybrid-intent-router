@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# hybrid-intent-router: per-mode envs, Ollama logs, downloaded CLM encoder, decision logs
+.venv-gpu/
+.venv-cpu/
+.run/
+models/
+*.jsonl
