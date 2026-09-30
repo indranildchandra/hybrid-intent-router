@@ -6,12 +6,16 @@
 #
 #   bash tests/installer/run_scenarios.sh     (Linux; needs setsid, pgrep/pkill and script)
 #
-# It uses the real .venv-cpu and .run/ of this checkout, and ports 11435, 11777 and 11999.
+# It uses the real .venv-cpu and .run/ of this checkout, and ports 11435, 11777 and 11999. A CLM
+# encoder already in models/clm/ skips the download S1 expects to fail: move it aside first.
 # Set TORCH_INDEX_URL if download.pytorch.org is blocked on your network.
 # shellcheck disable=SC2034  # A/B/R are read inside the eval'd check strings
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; REPO="$(cd "$HERE/../.." && pwd)"; cd "$REPO" || exit 1
 S="$(mktemp -d)"; mkdir -p "$S/stubstate"
 export PATH="$HERE/fakebin:$PATH" PYTHONPATH="$HERE/fakepy" STUB_STATE="$S/stubstate"
+# The CLM encoder download must fail, fast and the same way everywhere: a revision that does not
+# exist answers 404 (or a network error offline), never an 8.25 GB download on a CI runner.
+export HIR_CLM_GGUF_REVISION="hir-installer-scenarios-no-such-revision"
 PASS=0; FAIL=0
 # check NAME CONDITION [OUTPUT]: on FAIL, the warn/error/CLM lines of OUTPUT show what run.sh said instead
 check() {
