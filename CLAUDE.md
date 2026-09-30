@@ -19,7 +19,7 @@ The runnable companion to Appendix B of the article "Making Intent Routing Expla
 ## Layout
 
 - `run.sh` (root): one-click installer and runner. GPU default with automatic CPU fallback, `--cpu` to force CPU, `--skip-clm` in either mode. Starts Ollama only if none is running; stops only a server it started. Keep it shellcheck-clean and idempotent.
-- `src/hybrid_intent_router/`: the package. `cascade.py` wires tiers; one module per tier; `config.py` holds every `HIR_*` knob.
+- `src/hybrid_intent_router/`: the package. `cascade.py` wires tiers; one module per tier; `config.py` holds every `HIR_*` knob. Tier 3A reaches the CLM encoder through Ollama's native `/api/embed` (`ollama_embedder` in `tier3a_clm.py`), not the vLLM-style `/v1/embeddings` the CLM client defaults to.
 - `tests/`: `unit` (offline, model tiers faked) and `live` (auto-skips without Ollama). `tests/installer/` drives the real `run.sh` against a stand-in Ollama and Laya.
 - Runtime state (gitignored): `.run/` (run logs, Ollama server log, CLM/Laya download logs), `.venv-gpu/`, `.venv-cpu/`, `models/`.
 

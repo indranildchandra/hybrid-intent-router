@@ -35,7 +35,7 @@ class H(http.server.BaseHTTPRequestHandler):
             h = "account_access_queue" if "okta" in q else "human_triage"
             return self._send(200, {"model": body["model"], "message": {"role": "assistant",
                                     "content": json.dumps({"handler": h, "reason": "Stub fallback reasoning about the message."})}})
-        if self.path == "/v1/embeddings": return self._send(404, {"error": "model 'clm-encoder' not found"})
+        if self.path == "/api/embed": return self._send(404, {"error": "model 'clm-encoder' not found"})
         self._send(404, {"error": "not found"})
     def log_message(self, *a): pass
 

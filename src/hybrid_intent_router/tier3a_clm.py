@@ -5,7 +5,8 @@ embedded once and cached; each request costs one state pass plus a similarity op
 no cross-attention, so "cancel my order" and "do not cancel my order" can land close together.
 The top-2 margin is the explanation, and a small margin hands off to Tier 3B.
 
-The encoder is an 8-bit Qwen3-8B served by Ollama as `clm-encoder` (about 16 GB of RAM).
+The encoder is an 8-bit Qwen3-8B served by Ollama as `clm-encoder` (about 16 GB of RAM), reached
+through Ollama's native /api/embed (see ollama_embedder).
 When it is not served, this branch is skipped instead of failing the cascade.
 """
 import os
@@ -16,6 +17,42 @@ from .config import CLM_MARGIN, CLM_MODEL, DISABLE_CLM, OLLAMA, torch_device
 CATALOG = ["docs_usage_reports_api", "docs_billing_api", "docs_auth_tokens", "docs_webhooks", "docs_rate_limits"]
 
 
+def ollama_embedder():
+    """CLM's embedder, speaking Ollama's native /api/embed instead of the OpenAI-style endpoint.
+
+    CLM's client was written for vLLM: it sends `encoding_format: base64` and `truncate_prompt_tokens`
+    to /v1/embeddings, vLLM options that Ollama's OpenAI compatibility layer may reject. /api/embed takes
+    {"model", "input", "truncate"} and returns plain float vectors. Batching, caching and the L2
+    normalisation the projection heads expect stay in CLM's Embedder; only the HTTP call changes.
+    """
+    import numpy as np
+    import requests
+    from clm.embedder import Embedder, EmbedderError, l2
+
+    class OllamaEmbedder(Embedder):
+        def _fetch(self, texts):
+            body = {"model": self.model, "input": texts, "truncate": True}
+            try:
+                r = self.session.post(self.url, json=body, timeout=self.timeout)
+            except requests.RequestException as e:
+                raise EmbedderError(f"Ollama unreachable at {self.url}: {e}") from e
+            if r.status_code != 200:
+                raise EmbedderError(f"Ollama /api/embed error {r.status_code}: {r.text[:300]}")
+            j = r.json()
+            vecs = j.get("embeddings") or []
+            if len(vecs) != len(texts):
+                raise EmbedderError(f"Ollama /api/embed returned {len(vecs)} vectors for {len(texts)} inputs")
+            return [l2(np.asarray(v, dtype=np.float32)) for v in vecs], int(j.get("prompt_eval_count", 0) or 0)
+
+        def healthy(self):
+            try:
+                return self.session.get(f"{OLLAMA}/api/version", timeout=5).status_code == 200
+            except requests.RequestException:
+                return False
+
+    return OllamaEmbedder(url=f"{OLLAMA}/api/embed", model=CLM_MODEL)
+
+
 def load_clm():
     """Returns (engine or None, status string)."""
     if DISABLE_CLM:
@@ -24,11 +61,12 @@ def load_clm():
         os.environ.setdefault("CLM_DEVICE", torch_device())  # where the projection heads run
         from clm import Engine  # do not name any local file clm.py
 
-        engine = Engine(emb_url=f"{OLLAMA}/v1/embeddings", emb_model=CLM_MODEL)
+        engine = Engine(embedder=ollama_embedder())
         engine.rank("warm-up", CATALOG[:2])  # fails fast if clm-encoder is missing or cannot load
         return engine, "enabled"
     except Exception as exc:  # noqa: BLE001
-        return None, f"skipped ({type(exc).__name__})"
+        detail = " ".join(str(exc).split())[:240]  # the embedder's error carries Ollama's HTTP status and reply
+        return None, f"skipped ({type(exc).__name__}{': ' + detail if detail else ''})"
 
 
 def tier3a(engine, query: str) -> Tuple[Optional[str], str]:

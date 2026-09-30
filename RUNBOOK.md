@@ -206,7 +206,7 @@ What each step does:
 3. **Installing Ollama**, only if `ollama` is not on `PATH` (Step 3 explains the manual route).
 4. **Starting Ollama**, only if nothing is answering on the port (section 4; Step 4 shows how to start it yourself).
 5. **Pulling models**: `tev1:0.8b` and `qwen3:0.6b`, skipped when already present. Each pull is retried up to 4 times with backoff if the registry resets the connection.
-6. **CLM encoder**, if RAM (15 GiB) and disk (10 GB free) allow and `--skip-clm` is not set: the CLM client (needs `git`), the 8.25 GB GGUF download (resumable), `ollama create clm-encoder`, the projection heads. A failure prints one `warn` line, writes the details to `.run/clm-install.log` or `.run/clm-download.log`, and skips Tier 3A; the run continues.
+6. **CLM encoder**, if RAM (15 GiB) and disk (10 GB free) allow and `--skip-clm` is not set: the CLM client (needs `git`), the 8.25 GB GGUF download (resumable, with a progress bar), `ollama create clm-encoder`, the projection heads. A failure prints one `warn` line, writes the details to `.run/clm-install.log` or `.run/clm-download.log`, and skips Tier 3A; the run continues.
 7. **Fetching the pinned Laya checkpoint** from Hugging Face. A failure stops the run and writes the details to `.run/laya-download.log`.
 8. **Preflight**: the doctor prints `[ok]`, `[warn]` or `[FAIL]` per check and ends with `=> ready`.
 9. **Routing**: the seven Appendix B requests, one line each.
@@ -580,8 +580,16 @@ tail -n 50 .run/latest.log
 
 **`CLM branch: skipped (...)`**
 - `skipped (disabled)`: `--skip-clm`; or setup found RAM or disk too low (`warn CLM needs ...`); or the CLM client install or a download failed (`warn CLM ... failed`, details in `.run/clm-install.log` or `.run/clm-download.log`). `grep -i clm .run/latest.log` shows which.
-- `skipped (EmbedderError)`: the encoder is not served. Check `ollama list | grep clm-encoder`, then probe it (`:11435` in CPU mode):
-  `curl -s http://127.0.0.1:11434/v1/embeddings -d '{"model": "clm-encoder", "input": ["hi"]}' | head -c 200`
+- `skipped (EmbedderError: ...)`: the embedding request to Ollama failed. Tier 3A calls Ollama's native `/api/embed` (not the OpenAI-style `/v1/embeddings` the CLM client was written for, whose vLLM-only options Ollama may reject). The text after the colon is Ollama's own answer, and the preflight's `CLM embeddings` line sends the same request:
+  - `[ok] CLM embeddings answer at .../api/embed (dim 4096)`: the encoder works; if the branch was still skipped, the error is in the projection heads (`~/.cache/clm/CLM_v0.1-8B.pt`).
+  - `[warn] CLM embeddings fail: ... does not support embeddings (the model was not created as an embedding model ...)`: re-create it by deleting `models/clm/Modelfile` and running `./run.sh` again.
+  - `[warn] CLM embeddings: no answer ...`: the first call loads the 8 GB encoder into memory; retry once.
+- To send the request yourself, with a server running (`:11435` in CPU mode):
+
+  ```bash
+  curl -s http://127.0.0.1:11434/api/embed -d '{"model": "clm-encoder", "input": ["hi"]}' | head -c 200
+  ```
+
 - `skipped (ModuleNotFoundError)`: the CLM client is not installed, usually because the run used `--no-setup` after a `--skip-clm` setup. Re-run without `--no-setup` (needs `git`).
 - Never name a local file `clm.py`: it shadows the package.
 

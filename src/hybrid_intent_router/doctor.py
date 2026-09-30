@@ -19,6 +19,24 @@ def _version_tuple(v: str):
     return tuple(parts + [0] * (3 - len(parts)))
 
 
+def clm_embedding_probe(report) -> None:
+    """Send the request Tier 3A sends (Ollama's native /api/embed). Warns, since CLM is optional."""
+    url = f"{OLLAMA}/api/embed"
+    try:
+        r = requests.post(url, json={"model": CLM_MODEL, "input": ["ping"], "truncate": True},
+                          timeout=300)  # the first call loads the 8 GB encoder
+        if r.status_code == 200 and r.json().get("embeddings"):
+            report("ok", f"CLM embeddings answer at {url} (dim {len(r.json()['embeddings'][0])})")
+            return
+        answer = " ".join(r.text.split())[:200]
+        hint = (" (the model was not created as an embedding model: delete models/clm/Modelfile and "
+                "run ./run.sh again)" if "embed" in answer.lower() and "support" in answer.lower() else "")
+        report("warn", f"CLM embeddings fail: HTTP {r.status_code}: {answer}{hint}")
+    except requests.RequestException as exc:
+        report("warn", f"CLM embeddings: no answer from {url} ({type(exc).__name__}); the first call loads 8 GB, retry once")
+    report("warn", "Tier 3A (CLM) will be skipped; the rest of the cascade is unaffected")
+
+
 def main() -> int:
     ok = True
 
@@ -71,6 +89,8 @@ def main() -> int:
             present = CLM_MODEL in tags or f"{CLM_MODEL}:latest" in tags
             report("ok" if present else "warn",
                    f"model {CLM_MODEL}" + (digest_of(CLM_MODEL) if present else " not served: Tier 3A (CLM) will be skipped"))
+            if present:
+                clm_embedding_probe(report)
     except requests.RequestException as exc:
         report("FAIL", f"Ollama not reachable at {OLLAMA} ({type(exc).__name__}); start it with `ollama serve`")
         ok = False

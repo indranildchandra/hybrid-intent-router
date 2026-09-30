@@ -124,6 +124,8 @@ version_ge() {  # version_ge 0.35.1 0.35.0 -> true
     for (i = 1; i <= 3; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 } exit 0 }'
 }
 have() { command -v "$1" >/dev/null 2>&1; }
+# Last line of a log that tee may still be flushing (the downloads below log through tee)
+last_line() { sleep 0.5; tail -n 1 "$1" 2>/dev/null | tr -d '\r' | cut -c1-120; }
 http_ok() { curl -fsS --max-time 3 "$1" >/dev/null 2>&1; }
 
 OS="$(uname -s)"; ARCH="$(uname -m)"
@@ -382,10 +384,14 @@ setup_clm() {
         warn "CLM needs ~${CLM_MIN_DISK_GB} GB free disk (found ${free} GB). Skipping Tier 3A."; return
       fi
       log "Downloading CLM encoder ($CLM_GGUF_REPO/$CLM_GGUF_FILE, 8.25 GB, resumable)"
-      "$PY" - "$CLM_GGUF_REPO" "$CLM_GGUF_FILE" "$dir" "$CLM_GGUF_REVISION" 2>"$STATE_DIR/clm-download.log" <<'PYEOF' || { export HIR_DISABLE_CLM=1; warn "CLM download failed ($(tail -n 1 "$STATE_DIR/clm-download.log" | cut -c1-120)); skipping Tier 3A. Details: $STATE_DIR/clm-download.log"; return; }
+      # stderr carries the progress bar: shown on screen, and kept in the log for the failure summary
+      "$PY" - "$CLM_GGUF_REPO" "$CLM_GGUF_FILE" "$dir" "$CLM_GGUF_REVISION" 2> >(tee "$STATE_DIR/clm-download.log" >&2) <<'PYEOF' || { export HIR_DISABLE_CLM=1; warn "CLM download failed ($(last_line "$STATE_DIR/clm-download.log")); skipping Tier 3A. Details: $STATE_DIR/clm-download.log"; return; }
 import sys
 from huggingface_hub import hf_hub_download
-hf_hub_download(repo_id=sys.argv[1], filename=sys.argv[2], local_dir=sys.argv[3], revision=sys.argv[4])
+try:  # progress bar on screen; on failure one line, not a traceback
+    hf_hub_download(repo_id=sys.argv[1], filename=sys.argv[2], local_dir=sys.argv[3], revision=sys.argv[4])
+except Exception as exc:
+    sys.exit(f"{type(exc).__name__}: {exc}")
 PYEOF
     fi
     local size; size="$(wc -c < "$dir/$CLM_GGUF_FILE" | tr -d ' ')"
@@ -401,7 +407,7 @@ PYEOF
   fi
   if [[ ! -f "$CLM_HEADS" ]]; then
     log "Downloading CLM projection heads into ${CLM_HEADS%/*}"
-    "$VENV/bin/clm-download" >/dev/null 2>"$STATE_DIR/clm-download.log" || { export HIR_DISABLE_CLM=1; warn "clm-download failed; skipping Tier 3A. Details: $STATE_DIR/clm-download.log"; return; }
+    "$VENV/bin/clm-download" >/dev/null 2> >(tee "$STATE_DIR/clm-download.log" >&2) || { export HIR_DISABLE_CLM=1; warn "clm-download failed; skipping Tier 3A. Details: $STATE_DIR/clm-download.log"; return; }
   fi
   local hsize; hsize="$(wc -c < "$CLM_HEADS" | tr -d ' ')"
   if [[ "$hsize" != "$CLM_HEADS_BYTES" ]]; then
@@ -414,8 +420,13 @@ PYEOF
 # ----------------------------------------------------------------------------- 5. laya warm-up
 warm_laya() {
   log "Fetching pinned Laya checkpoint (first run downloads from Hugging Face)"
-  HIR_DEVICE="$HIR_DEVICE" "$PY" -c "from hybrid_intent_router.system_one import laya; laya().load('english')" 2>"$STATE_DIR/laya-download.log" \
-    || die "Laya checkpoint download failed ($(tail -n 1 "$STATE_DIR/laya-download.log" | cut -c1-120)). Check access to huggingface.co (HF_TOKEN if rate-limited). Details: $STATE_DIR/laya-download.log"
+  HIR_DEVICE="$HIR_DEVICE" "$PY" -c "import sys
+from hybrid_intent_router.system_one import laya
+try:
+    laya().load('english')
+except Exception as exc:
+    sys.exit(f'{type(exc).__name__}: {exc}')" 2> >(tee "$STATE_DIR/laya-download.log" >&2) \
+    || die "Laya checkpoint download failed ($(last_line "$STATE_DIR/laya-download.log")). Check access to huggingface.co (HF_TOKEN if rate-limited). Details: $STATE_DIR/laya-download.log"
   ok "Laya checkpoint cached"
 }
 
