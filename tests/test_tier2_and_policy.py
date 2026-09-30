@@ -16,7 +16,7 @@ def test_tfidf_routes_billing():
 
 
 def test_documented_threshold_edges():
-    # DEMO-RUNBOOK section 5 and RUNBOOK step 7 rely on these: the invoice variant clears 0.85 at
+    # RUNBOOK 3.5 and Step 8 rely on these: the invoice variant clears 0.85 at
     # Tier 2, the variant without it abstains and reaches Laya's churn question
     _, p_invoice, _, _ = tier2("We were billed twice for invoice #99281. Refund it today or we cancel.", {})
     _, p_plain, _, _ = tier2("We were billed twice. Refund it today or we cancel.", {})

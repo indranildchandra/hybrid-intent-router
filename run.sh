@@ -212,7 +212,7 @@ setup_python() {
 install_ollama() {
   if have ollama; then return; fi
   log "Installing Ollama"
-  local manual="install it by hand (RUNBOOK.md, section 0, Step 3), then re-run ./run.sh"
+  local manual="install it by hand (RUNBOOK.md, section 1, Step 3), then re-run ./run.sh"
   if [[ "$OS" == "Linux" ]]; then
     warn "Running the official installer (https://ollama.com/install.sh). It may ask for sudo."
     # Download first, so a failed download stops here with a clear message instead of a curl code
@@ -393,7 +393,7 @@ if [[ "$NO_SETUP" == "0" ]]; then
   check_client_version
 fi
 [[ -x "$PY" ]] || die "No environment at $VENV. Run ./run.sh$([[ "$FORCED_CPU" == "1" ]] && echo " --cpu") without --no-setup first."
-have ollama || die "Ollama is not installed. Run ./run.sh without --no-setup to install it, or install it by hand (RUNBOOK.md, section 0, Step 3)."
+have ollama || die "Ollama is not installed. Run ./run.sh without --no-setup to install it, or install it by hand (RUNBOOK.md, section 1, Step 3)."
 
 if [[ "$MODE" == "cpu" ]]; then start_ollama "$CPU_PORT"; else start_ollama "$GPU_PORT"; fi
 export HIR_OLLAMA_URL HIR_DEVICE

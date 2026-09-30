@@ -287,7 +287,7 @@ Laya checkpoints are pinned to the reviewed commits shipped in `laya.PINNED_REVI
 
 What to watch at the gateway: decision-record completeness (anything below 100% is an explainability outage), tier intercept ratios (a week-on-week rise in Tier 4 share is an incident), adjudicated shadow disagreement per tier and intent, ECE drift on a labelled sample, and fallback storms when an upstream tier degrades and its abstention rate spikes.
 
-Operating the repo (every run command, debugging, where each log lives) is in [`RUNBOOK.md`](RUNBOOK.md). A step-by-step walkthrough of each tier, with commands to probe them one at a time, is in [`DEMO-RUNBOOK.md`](DEMO-RUNBOOK.md).
+Everything operational is in one place, [`RUNBOOK.md`](RUNBOOK.md): the first local run step by step, everyday commands, a tier-by-tier walkthrough of the cascade, where each log lives, and debugging.
 
 ---
 
@@ -332,8 +332,7 @@ CI (`.github/workflows/ci.yml`) runs the unit suite on Python 3.11 and 3.12, che
 | `src/hybrid_intent_router/__main__.py` | CLI: demo set, `--query`, `--meta`, `--jsonl`, `--shadow-rate`, `HIR_LOG_LEVEL` |
 | `tests/` | `unit` and `live` suites |
 | `tests/installer/` | `run.sh` scenarios against a stand-in Ollama and Laya |
-| `RUNBOOK.md` | How to run, debug and find every log |
-| `DEMO-RUNBOOK.md` | Step-by-step walkthrough, tier by tier |
+| `RUNBOOK.md` | First local run step by step, everyday commands, tier-by-tier walkthrough, logs, debugging |
 | `CLAUDE.md` | Context for coding agents working in this repo |
 | `.run/`, `.venv-gpu/`, `.venv-cpu/`, `models/` | Created at runtime (logs, environments, CLM encoder); gitignored |
 
