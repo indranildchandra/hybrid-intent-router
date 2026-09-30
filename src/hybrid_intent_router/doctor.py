@@ -29,8 +29,8 @@ def clm_embedding_probe(report) -> None:
             report("ok", f"CLM embeddings answer at {url} (dim {len(r.json()['embeddings'][0])})")
             return
         answer = " ".join(r.text.split())[:200]
-        hint = (" (the model was not created as an embedding model: delete models/clm/Modelfile and "
-                "run ./run.sh again)" if "embed" in answer.lower() and "support" in answer.lower() else "")
+        hint = (" (the model was registered without embedding support: run ./run.sh again, which renames "
+                "the GGUF pooling key and registers it anew)" if "embed" in answer.lower() and "support" in answer.lower() else "")
         report("warn", f"CLM embeddings fail: HTTP {r.status_code}: {answer}{hint}")
     except requests.RequestException as exc:
         report("warn", f"CLM embeddings: no answer from {url} ({type(exc).__name__}); the first call loads 8 GB, retry once")

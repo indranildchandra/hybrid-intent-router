@@ -25,7 +25,7 @@ help:
 	@echo "    make test-unit     Offline unit tests: no GPU, Ollama or Hugging Face"
 	@echo "    make test-live     Unit + live suites via run.sh (make test-live-cpu for forced CPU)"
 	@echo "    make test-installer  run.sh end to end against a stand-in Ollama and Laya (Linux)"
-	@echo "    make lint          shellcheck run.sh (if installed)"
+	@echo "    make lint          shellcheck run.sh (the pinned one make setup installs)"
 	@echo ""
 	@echo "    make clean         Remove caches and every log under .run/"
 	@echo "    make clean-all     clean + both venvs and the downloaded CLM encoder"
@@ -71,8 +71,11 @@ test-installer:
 calibration:
 	$(PY) -m hybrid_intent_router.calibration
 
+# The pinned shellcheck-py from requirements.txt (installed into the venv by run.sh), else one on PATH
+SHELLCHECK := $(firstword $(wildcard .venv-gpu/bin/shellcheck .venv-cpu/bin/shellcheck) $(shell command -v shellcheck))
 lint:
-	@command -v shellcheck >/dev/null && shellcheck -S warning run.sh || echo "shellcheck not installed; skipping"
+	@test -n "$(SHELLCHECK)" || { echo "shellcheck not found: make setup (or make setup-cpu) installs the pinned one into the venv"; exit 1; }
+	$(SHELLCHECK) -S warning run.sh
 
 # torch and its GPU-specific dependencies stay out of the lock: run.sh installs the torch build
 # that matches the mode (TORCH_VERSION in run.sh), and each build brings its own GPU libraries.

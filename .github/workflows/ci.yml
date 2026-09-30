@@ -41,13 +41,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: shellcheck run.sh
-        run: shellcheck -S warning run.sh
       - name: run.sh --help
         run: ./run.sh --help
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # The shellcheck pinned in requirements.txt, not whichever one the runner image ships
+      - name: shellcheck run.sh
+        run: |
+          python -m pip install "$(grep -E '^shellcheck-py==' requirements.txt)"
+          shellcheck -S warning run.sh
       - name: Installer scenarios (real run.sh, stand-in Ollama and Laya, no model downloads)
         run: bash tests/installer/run_scenarios.sh

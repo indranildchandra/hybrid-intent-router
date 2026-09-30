@@ -26,7 +26,7 @@ def test_single_query_writes_jsonl(tmp_path, monkeypatch, capsys):
     assert "TIER_1_DETERMINISTIC" in capsys.readouterr().out
 
 
-def test_demo_set_routes_all_seven(monkeypatch, capsys):
+def test_demo_set_routes_all_eight(monkeypatch, capsys):
     monkeypatch.setattr(cascade, "HybridRouter", FakeRouter)
     assert cli.main([]) == 0
-    assert capsys.readouterr().out.count("TIER_1_DETERMINISTIC") == len(cli.DEMO_REQUESTS) == 7
+    assert capsys.readouterr().out.count("TIER_1_DETERMINISTIC") == len(cli.DEMO_REQUESTS) == 8

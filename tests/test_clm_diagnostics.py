@@ -60,7 +60,7 @@ def test_ollama_embedder_speaks_native_api():
 
 @pytest.mark.parametrize("resp, expect", [
     (_Resp(200, {"embeddings": [[0.1] * 4096]}), "ok  CLM embeddings answer"),
-    (_Resp(400, {"error": "model does not support embeddings"}), "not created as an embedding model"),
+    (_Resp(400, {"error": "model does not support embeddings"}), "registered without embedding support"),
     (_Resp(500, {"error": "boom"}), "CLM embeddings fail: HTTP 500"),
 ])
 def test_embedding_probe(monkeypatch, resp, expect):
@@ -75,3 +75,31 @@ def test_embedding_probe(monkeypatch, resp, expect):
     doctor.clm_embedding_probe(lambda status, msg: lines.append(f"{status}  {msg}"))
     assert sent["url"].endswith("/api/embed")
     assert any(expect in line for line in lines), lines
+
+
+class _Engine:
+    """Ranks the candidates in the order given, with the given probabilities."""
+    def __init__(self, order):
+        self.order = order
+
+    def rank(self, query, candidates, instructions=None):
+        assert candidates == list(tier3a_clm.CANDIDATES.values())
+        return [{"candidate": tier3a_clm.CANDIDATES[k], "prob": p} for k, p in self.order]
+
+
+def test_tier3a_routes_a_clear_winner():
+    target, why = tier3a_clm.tier3a(_Engine([("docs_rate_limits", 0.89), ("none_of_these", 0.06)]), "q")
+    assert target == "docs_rate_limits"
+    assert why == "top-2 margin 0.83 over none_of_these"
+
+
+def test_tier3a_abstains_when_no_page_answers():
+    # A softmax over pages alone would hand the Okta question to some page; "none of these" lets CLM say no
+    target, why = tier3a_clm.tier3a(_Engine([("none_of_these", 0.86), ("docs_auth_tokens", 0.07)]), "q")
+    assert target is None
+    assert why == "out of catalog: none_of_these p=0.86 over docs_auth_tokens p=0.07"
+
+
+def test_tier3a_abstains_on_a_tie():
+    target, why = tier3a_clm.tier3a(_Engine([("docs_billing_api", 0.46), ("docs_webhooks", 0.41)]), "q")
+    assert target is None and why == "top-2 margin 0.05 over docs_webhooks"

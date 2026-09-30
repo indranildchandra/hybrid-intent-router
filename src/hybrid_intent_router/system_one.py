@@ -5,10 +5,18 @@
 
 Laya reads the input once and returns probability distributions. It never generates a token.
 """
+import warnings
 from functools import lru_cache
 from typing import Optional, Tuple
 
 from .config import GUARD_THRESHOLD, LAYA_REVISIONS, torch_device
+
+
+# The pinned checkpoint clamps its `choice:11+` temperature (choice questions with 11 or more options)
+# and warns on every load that those confidences are uncalibrated. No question here has more than
+# three options, so that one entry is silenced; a warning naming any other entry still shows.
+_UNUSED_BUCKET_WARNING = (r"laya: this checkpoint ships invalid temperatures or values outside \S+, \S+; "
+                          r"using choice:11\+=[^,]* -> [0-9.]+\. Treat confidence")
 
 
 @lru_cache(maxsize=1)
@@ -19,7 +27,16 @@ def laya():
     # standalone_repos=True: the pinned SHAs are per repository (laya, laya-multilingual). The
     # default bundle layout serves multilingual from a subfolder of the laya repo, where the
     # laya-multilingual SHA does not apply, so the first non-English request would fail to load.
-    return Router(revisions=LAYA_REVISIONS, device=torch_device(), standalone_repos=True)
+    router = Router(revisions=LAYA_REVISIONS, device=torch_device(), standalone_repos=True)
+    load = router.load  # predict() loads checkpoints lazily through this
+
+    def load_quietly(name):
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=_UNUSED_BUCKET_WARNING, category=RuntimeWarning)
+            return load(name)
+
+    router.load = load_quietly
+    return router
 
 
 GUARD_QUESTIONS = {

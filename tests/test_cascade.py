@@ -57,7 +57,7 @@ def test_metadata_selects_catboost(router):
 def test_tier3b_answers_before_jev(router, monkeypatch):
     monkeypatch.setattr(cascade, "tier3b", lambda q: ("technical_queue", "department=technical at p=0.92"))
     d = router.route("My screen flashed green and the app uninstalled itself")
-    assert d["tier"] == "TIER_3B_SYSTEM_ONE"
+    assert d["tier"] == "TIER_3B_LAYA"
     assert "tier3c" not in router.calls
 
 

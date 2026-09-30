@@ -5,6 +5,11 @@ embedded once and cached; each request costs one state pass plus a similarity op
 no cross-attention, so "cancel my order" and "do not cancel my order" can land close together.
 The top-2 margin is the explanation, and a small margin hands off to Tier 3B.
 
+The candidates are short page descriptions, the plain answer text the action head is trained on, plus
+an explicit "none of these". CLM's probabilities are a softmax over the candidates, so without that
+option a request no page answers (an Okta setup question) still gets a confident winner; with it,
+CLM itself says the request is out of catalog, and Tier 3A abstains.
+
 The encoder is an 8-bit Qwen3-8B served by Ollama as `clm-encoder` (about 16 GB of RAM), reached
 through Ollama's native /api/embed (see ollama_embedder).
 When it is not served, this branch is skipped instead of failing the cascade.
@@ -14,7 +19,16 @@ from typing import Optional, Tuple
 
 from .config import CLM_MARGIN, CLM_MODEL, DISABLE_CLM, OLLAMA, torch_device
 
-CATALOG = ["docs_usage_reports_api", "docs_billing_api", "docs_auth_tokens", "docs_webhooks", "docs_rate_limits"]
+CATALOG = {  # page id -> what the action head embeds
+    "docs_usage_reports_api": "Usage reports endpoint: account usage and consumption data",
+    "docs_billing_api": "Billing API: invoices, charges, payment methods",
+    "docs_auth_tokens": "API tokens: create, rotate, revoke",
+    "docs_webhooks": "Webhooks: event notifications to your HTTPS endpoint",
+    "docs_rate_limits": "Rate limits: request quotas and HTTP 429 errors",
+}
+NONE_OF_THESE = "none_of_these"
+CANDIDATES = {**CATALOG, NONE_OF_THESE: "None of these: not a question about the developer API docs"}
+QUESTION = "Which documentation page answers this?"
 
 
 def ollama_embedder():
@@ -62,7 +76,7 @@ def load_clm():
         from clm import Engine  # do not name any local file clm.py
 
         engine = Engine(embedder=ollama_embedder())
-        engine.rank("warm-up", CATALOG[:2])  # fails fast if clm-encoder is missing or cannot load
+        engine.rank("warm-up", list(CATALOG.values())[:2])  # fails fast if clm-encoder is missing or cannot load
         return engine, "enabled"
     except Exception as exc:  # noqa: BLE001
         detail = " ".join(str(exc).split())[:240]  # the embedder's error carries Ollama's HTTP status and reply
@@ -70,7 +84,11 @@ def load_clm():
 
 
 def tier3a(engine, query: str) -> Tuple[Optional[str], str]:
-    ranked = engine.rank(query, CATALOG, instructions="Which documentation page answers this?")
-    margin = ranked[0]["prob"] - ranked[1]["prob"]
-    why = f"top-2 margin {margin:.2f} over {ranked[1]['candidate']}"
-    return (ranked[0]["candidate"] if margin >= CLM_MARGIN else None), why
+    ids, texts = list(CANDIDATES), list(CANDIDATES.values())
+    ranked = [(ids[texts.index(r["candidate"])], r["prob"])
+              for r in engine.rank(query, texts, instructions=QUESTION)]
+    (top, p1), (second, p2) = ranked[0], ranked[1]
+    if top == NONE_OF_THESE:
+        return None, f"out of catalog: {NONE_OF_THESE} p={p1:.2f} over {second} p={p2:.2f}"
+    why = f"top-2 margin {p1 - p2:.2f} over {second}"
+    return (top if p1 - p2 >= CLM_MARGIN else None), why

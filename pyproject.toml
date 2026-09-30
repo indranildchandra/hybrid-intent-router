@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "shellcheck-py>=0.11"]  # shellcheck-py ships the shellcheck binary for `make lint`
 
 [project.scripts]
 hybrid-intent-router = "hybrid_intent_router.__main__:main"

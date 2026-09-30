@@ -327,6 +327,12 @@ model_present() {  # exact tag or tag:latest in /api/tags
   grep -Eq "\"name\": *\"$1(:latest)?\"" <<<"$tags"
 }
 
+model_embeds() {  # Ollama lists "embedding" in /api/show capabilities only for a model it will embed with
+  local show
+  show="$(curl -fsS "$HIR_OLLAMA_URL/api/show" -d "{\"model\": \"$1\"}")" || return 1
+  grep -Eq '"capabilities": *\[[^]]*"embedding"' <<<"$show"
+}
+
 PULL_ATTEMPTS="${HIR_PULL_ATTEMPTS:-4}"
 
 pull_one() {  # retries with backoff: registry connections get reset, and Ollama resumes partial pulls
@@ -372,6 +378,10 @@ setup_clm() {
     "${PIP[@]}" --no-deps "$CLM_GIT" 2>"$STATE_DIR/clm-install.log" \
       || { export HIR_DISABLE_CLM=1; warn "CLM client install failed; skipping Tier 3A. Details: $STATE_DIR/clm-install.log"; return; }
   fi
+  if model_present "$CLM_MODEL" && ! model_embeds "$CLM_MODEL"; then
+    warn "$CLM_MODEL was registered without embedding support; registering it again"
+    OLLAMA_HOST="$OLLAMA_HOSTPORT" ollama rm "$CLM_MODEL" >/dev/null || true
+  fi
   if model_present "$CLM_MODEL"; then
     ok "model $CLM_MODEL"
   else
@@ -399,7 +409,10 @@ PYEOF
       export HIR_DISABLE_CLM=1
       warn "CLM encoder is $size bytes, expected $CLM_GGUF_BYTES (truncated, or a different revision). Delete $dir/$CLM_GGUF_FILE and re-run; skipping Tier 3A."; return
     fi
-    # The GGUF already declares last-token pooling, which is what lets Ollama serve it as an embedder
+    # The GGUF declares last-token pooling under a bare key; Ollama serves it as an embedder only once
+    # the key carries the architecture prefix. Renamed in place: size and weights stay as downloaded.
+    "$PY" -m hybrid_intent_router.gguf_pooling "$dir/$CLM_GGUF_FILE" >/dev/null 2>"$STATE_DIR/clm-gguf.log" \
+      || { export HIR_DISABLE_CLM=1; warn "could not fix the CLM GGUF pooling key ($(last_line "$STATE_DIR/clm-gguf.log")); skipping Tier 3A."; return; }
     echo "FROM ./$CLM_GGUF_FILE" > "$dir/Modelfile"
     log "Registering $CLM_MODEL with Ollama"
     (cd "$dir" && OLLAMA_HOST="$OLLAMA_HOSTPORT" ollama create "$CLM_MODEL" -f Modelfile) \

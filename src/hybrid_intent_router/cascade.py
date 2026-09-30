@@ -48,7 +48,7 @@ class HybridRouter:
 
         target, why = tier3b(query)
         if target:
-            return self._shadow(record(query, "TIER_3B_SYSTEM_ONE", target, why, "laya"), query)
+            return self._shadow(record(query, "TIER_3B_LAYA", target, why, "laya"), query)
 
         target, why, model = tier3c(query)
         if target:

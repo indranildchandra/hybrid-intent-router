@@ -19,7 +19,7 @@ The runnable companion to Appendix B of the article "Making Intent Routing Expla
 ## Layout
 
 - `run.sh` (root): one-click installer and runner. GPU default with automatic CPU fallback, `--cpu` to force CPU, `--skip-clm` in either mode. Starts Ollama only if none is running; stops only a server it started. Keep it shellcheck-clean and idempotent.
-- `src/hybrid_intent_router/`: the package. `cascade.py` wires tiers; one module per tier; `config.py` holds every `HIR_*` knob. Tier 3A reaches the CLM encoder through Ollama's native `/api/embed` (`ollama_embedder` in `tier3a_clm.py`), not the vLLM-style `/v1/embeddings` the CLM client defaults to.
+- `src/hybrid_intent_router/`: the package. `cascade.py` wires tiers; one module per tier; `config.py` holds every `HIR_*` knob. Tier 3A reaches the CLM encoder through Ollama's native `/api/embed` (`ollama_embedder` in `tier3a_clm.py`), not the vLLM-style `/v1/embeddings` the CLM client defaults to. `gguf_pooling.py` renames the published GGUF's bare `pooling_type` key to `qwen3.pooling_type` in place before `ollama create`; without it Ollama registers the encoder for completion only. Tier 3A ranks short page descriptions plus a "none of these" candidate and abstains when it wins: CLM's softmax always has a winner, so this is how it says out of catalog.
 - `tests/`: `unit` (offline, model tiers faked) and `live` (auto-skips without Ollama). `tests/installer/` drives the real `run.sh` against a stand-in Ollama and Laya.
 - Runtime state (gitignored): `.run/` (run logs, Ollama server log, CLM/Laya download logs), `.venv-gpu/`, `.venv-cpu/`, `models/`.
 
@@ -27,7 +27,7 @@ The runnable companion to Appendix B of the article "Making Intent Routing Expla
 
 ```bash
 make test-unit                       # must pass before any commit
-make lint                            # shellcheck run.sh
+make lint                            # shellcheck run.sh (pinned shellcheck-py, in the venv via requirements.txt)
 make test-installer                  # after touching run.sh: 37 end-to-end scenarios (Linux)
 ./run.sh --cpu --skip-clm --test     # full local run on the lightest path
 ```
