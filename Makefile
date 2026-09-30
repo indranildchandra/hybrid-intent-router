@@ -3,7 +3,9 @@
 PY_GPU := .venv-gpu/bin/python
 PY_CPU := .venv-cpu/bin/python
 PY     := $(if $(wildcard $(PY_GPU)),$(PY_GPU),$(if $(wildcard $(PY_CPU)),$(PY_CPU),python3))
-export PYTHONPATH := $(CURDIR)/src
+# Prepend src and keep any existing path. The comment sits on its own line: make would keep the
+# spaces before an inline comment as part of the value.
+export PYTHONPATH := $(CURDIR)/src$(if $(PYTHONPATH),:$(PYTHONPATH))
 
 help:
 	@echo "hybrid-intent-router: targets"

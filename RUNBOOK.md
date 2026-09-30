@@ -36,7 +36,19 @@ What those need to show:
 - **`git`** is needed only for the CLM branch. **`perl`**, preinstalled on Linux and macOS, strips colour codes from the run log; without it the log keeps them.
 - **GPU (optional):** an NVIDIA GPU whose driver supports the CUDA build of the default PyPI torch wheel (CUDA 13.0 for torch 2.14), or Apple Silicon. Without either, `run.sh` falls back to CPU on its own.
 - **Disk:** about 6 GB, plus about 10 GB more for the CLM encoder. **RAM:** 8 GB is enough without CLM; CLM needs about 16 GB.
-- **Network on the first run:** `pypi.org`, `ollama.com`, `huggingface.co`, `github.com`, and `download.pytorch.org` for the CPU torch wheel on Linux.
+- **Network on the first run:** `pypi.org`, `ollama.com`, `registry.ollama.ai` (the models), `huggingface.co`, `github.com`, and `download.pytorch.org` for the CPU torch wheel on Linux.
+
+Then check that the model registry is reachable, since model pulls are the step most often blocked by corporate networks and VPNs:
+
+```bash
+curl -sI https://registry.ollama.ai/v2/ | head -1                                                    # expect: HTTP/2 404
+curl -s -o /dev/null -w "%{http_code}\n" https://registry.ollama.ai/v2/library/qwen3/manifests/0.6b   # expect: 200
+curl -s -o /dev/null -w "%{http_code}\n" https://registry.ollama.ai/v2/library/tev1/manifests/0.8b    # expect: 200
+```
+
+- **`HTTP/2 404` then `200` and `200`:** the registry is reachable and both models exist. The 404 is normal: the bare `/v2/` path has nothing at it.
+- **A connection reset, a timeout, or no status line:** the network is blocking the registry. Fix that first (off VPN, another network, or `HTTPS_PROXY`), as described in section 7, "Pulling a model fails".
+- **`404` on a manifest:** that model tag does not exist in the registry; check the name against `HIR_JEV_MODEL` / `HIR_FALLBACK_MODEL` in the README configuration table.
 
 ### Step 2. Install anything missing
 
@@ -206,6 +218,7 @@ The first three routing lines must match exactly: they are deterministic. The la
 Run these after the first run succeeds. Each one should finish in about a minute now that everything is cached.
 
 ```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://registry.ollama.ai/v2/library/qwen3/manifests/0.6b   # 0. registry reachable: 200
 ./run.sh --no-setup --skip-clm                 # 1. second run: no installs, straight to routing
 ./run.sh --no-setup --skip-clm --test          # 2. unit + live suites against the real models: all pass
 ./run.sh --no-setup --skip-clm --query "We were billed twice. Refund it today or we cancel." --jsonl decisions.jsonl
