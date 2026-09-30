@@ -1,0 +1,12 @@
+# torch is installed separately by run.sh: CUDA/MPS build for GPU mode, CPU wheel for --cpu.
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.5
+catboost>=1.2.7
+requests>=2.28
+huggingface_hub>=0.25
+
+# System One clients. Pinned: the Laya checkpoint revisions in config.py are the reviewed
+# commits for laya 0.3.22, and a decision you cannot replay is a decision you cannot explain.
+laya==0.3.22
+typesafe-sdk==0.7.2

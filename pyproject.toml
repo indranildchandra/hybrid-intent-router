@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hybrid-intent-router"
+version = "0.1.0"
+description = "Explainable four-tier intent routing: regex/trie, TF-IDF and CatBoost, System One decision models (Laya, Jev, CLM) and an LLM fallback, with a decision record at every exit."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Indranil Chandra" }]
+keywords = [
+    "intent-routing", "intent-classification", "llm-routing", "model-cascade", "system-one",
+    "jev", "laya", "clm", "calibration", "explainability", "catboost", "ollama",
+]
+# torch is intentionally not listed: run.sh installs the CUDA/MPS or CPU build explicitly
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scikit-learn>=1.5",
+    "catboost>=1.2.7",
+    "requests>=2.28",
+    "huggingface_hub>=0.25",
+    "laya==0.3.22",
+    "typesafe-sdk==0.7.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+hybrid-intent-router = "hybrid_intent_router.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/indranildchandra/hybrid-intent-router"
+
+[tool.setuptools.packages.find]
+where = ["src"]
