@@ -13,7 +13,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; REPO="$(cd "$HERE/../.." &
 S="$(mktemp -d)"; mkdir -p "$S/stubstate"
 export PATH="$HERE/fakebin:$PATH" PYTHONPATH="$HERE/fakepy" STUB_STATE="$S/stubstate"
 PASS=0; FAIL=0
-check() { if eval "$2"; then echo "PASS  $1"; PASS=$((PASS+1)); else echo "FAIL  $1"; FAIL=$((FAIL+1)); fi; }
+# check NAME CONDITION [OUTPUT]: on FAIL, the warn/error/CLM lines of OUTPUT show what run.sh said instead
+check() {
+  if eval "$2"; then echo "PASS  $1"; PASS=$((PASS+1)); return; fi
+  echo "FAIL  $1"; FAIL=$((FAIL+1))
+  [[ -n "${3:-}" && -f "$3" ]] && grep -iE "warn|error|fail|clm" "$3" | tail -n 8 | sed 's/^/      | /'
+  return 0
+}
 up() { curl -fsS --max-time 2 "http://127.0.0.1:${1:-11435}/api/version" >/dev/null 2>&1; }
 ours() { pgrep -f "stub_ollama_server.py" >/dev/null; }
 reset_models() { rm -f "$STUB_STATE"/*; touch "$STUB_STATE/tev1__0.8b" "$STUB_STATE/qwen3__0.6b"; }
@@ -24,7 +30,7 @@ echo "--- S1 idempotent setup"
 ./run.sh --setup-only > "$S/s1b.out" 2>&1; B=$?
 check "setup exits 0 twice" '[[ $A == 0 && $B == 0 ]]'
 check "second run skips installs even when --skip-clm toggles" 'grep -q "dependencies already installed" "$S/s1b.out"'
-check "CLM failure is one line and points at a log" 'grep -q "CLM download failed (.*). skipping Tier 3A. Details: .*clm-download.log" "$S/s1b.out" && ! grep -q Traceback "$S/s1b.out"'
+check "CLM failure is one line and points at a log" 'grep -q "CLM download failed (.*). skipping Tier 3A. Details: .*clm-download.log" "$S/s1b.out" && ! grep -q Traceback "$S/s1b.out"' "$S/s1b.out"
 check "fallback hint does not force --cpu" 'grep -q "Run ./run.sh --no-setup to route" "$S/s1b.out"'
 check "server stopped after setup" '! up && ! ours'
 
