@@ -23,7 +23,7 @@ How to run `hybrid-intent-router`, how to debug it, and where every log and arti
 ./run.sh --skip-clm             # skip the 8.25 GB CLM encoder (auto-skipped below 15 GiB RAM)
 ./run.sh --setup-only           # install + preflight, do not route (make setup)
 ./run.sh --no-setup --setup-only  # preflight only (make check)
-./run.sh --test                 # after setup, run unit + live test suites
+./run.sh --test                 # setup, then unit + live test suites, then route
 
 ./run.sh --no-setup --query "Refund it today or we cancel." --jsonl decisions.jsonl
 cat .run/latest.log             # full output of the last run
@@ -41,7 +41,9 @@ You need three things. `run.sh` installs everything else.
 - **Python 3.10 to 3.13.** On Debian/Ubuntu also `python3-venv` (or install `uv`, which `run.sh` prefers when present).
 - **`git`**, only for the CLM branch.
 
-For the GPU path: an NVIDIA GPU with a driver that supports CUDA 12.x (`nvidia-smi` must work), or Apple Silicon. Without either, `run.sh` falls back to CPU on its own.
+`perl`, preinstalled on Linux and macOS, is used to strip colour codes from the run log; without it the log keeps them.
+
+For the GPU path: an NVIDIA GPU whose driver supports the CUDA build of the default PyPI torch wheel (CUDA 13.0 for torch 2.14; `nvidia-smi` must work), or Apple Silicon. Without either, `run.sh` falls back to CPU on its own.
 
 Disk: about 6 GB, plus about 10 GB more if the CLM encoder is downloaded. RAM: 8 GB is enough without CLM; CLM needs about 16 GB.
 
@@ -62,12 +64,12 @@ cd hybrid-intent-router
 The steps, in order, each printed as `==>`:
 
 1. **Detecting hardware.** GPU (`nvidia-smi` or Apple Silicon), RAM, OS. No GPU: `warn ... Falling back to CPU`.
-2. **Python environment.** Creates `.venv-gpu` or `.venv-cpu`, installs torch (CUDA/MPS build or CPU wheel), the requirements, and the CLM client. Skipped on later runs unless `requirements.txt` or the mode changed.
+2. **Python environment.** Creates `.venv-gpu` or `.venv-cpu`, installs torch (CUDA/MPS build or CPU wheel) and the requirements. Skipped on later runs (`ok dependencies already installed`) unless `requirements.txt`, the mode or `TORCH_INDEX_URL` changed.
 3. **Installing Ollama**, only if `ollama` is not on `PATH`. On Linux this runs the official installer and may ask for sudo.
 4. **Starting Ollama**, only if nothing is answering on the port (section 4).
 5. **Pulling models**: `tev1:0.8b` and `qwen3:0.6b`. Skipped when already present.
-6. **CLM encoder**, if RAM and disk allow: 8.25 GB GGUF download (resumable), `ollama create clm-encoder`, projection heads.
-7. **Fetching the pinned Laya checkpoint** from Hugging Face.
+6. **CLM encoder**, if RAM (15 GiB) and disk (10 GB free) allow: the CLM client (needs `git`), the 8.25 GB GGUF download (resumable), `ollama create clm-encoder`, the projection heads. A failure here prints one `warn` line, writes the details to `.run/clm-install.log` or `.run/clm-download.log`, and skips Tier 3A; the run continues.
+7. **Fetching the pinned Laya checkpoint** from Hugging Face. A failure stops the run and writes the details to `.run/laya-download.log`.
 8. **Preflight**: the doctor prints `[ok]`, `[warn]` or `[FAIL]` per check and ends with `=> ready`.
 9. **Routing**: the seven Appendix B requests, one line each.
 
@@ -111,7 +113,7 @@ make clean         # caches and logs under .run/
 The rule is ownership.
 
 - **Already running: reused and left alone.** If something answers `GET /api/version` on the port, `run.sh` prints `Ollama already running on :<port>: reusing it, and leaving it running afterwards`. It pulls models into that server if they are missing, but never stops or restarts it.
-- **Not running: started, then stopped.** `run.sh` starts `ollama serve` on the port, prints `Starting Ollama on :<port> (<mode>), logging to .run/ollama-<mode>.log`, and on exit prints `Stopping the Ollama server this run started (pid N) to free its memory`. That happens on every exit path: success, a failed step, Ctrl-C, or `kill`. It sends TERM, waits up to 10 seconds, then KILLs the server and any model runner processes it spawned.
+- **Not running: started, then stopped.** `run.sh` starts `ollama serve` on the port, prints `Starting Ollama on :<port> (<mode>), logging to .run/ollama-<mode>.log`, and on exit prints `Stopping the Ollama server this run started (pid N) to free its memory`. That happens on every exit path: success, a failed step, Ctrl-C, or `kill` (SIGTERM or SIGHUP). It sends TERM, waits up to 10 seconds, then KILLs the server and any model runner processes it spawned.
 - **`--keep-ollama`** leaves a server this run started running, and prints the pid so you can stop it later with `kill <pid>`.
 - **`HIR_OLLAMA_URL=http://host:port`** points at a server you manage. `run.sh` never starts or stops anything in that case.
 
@@ -136,6 +138,9 @@ Models loaded into a reused server stay in its memory for Ollama's `keep_alive` 
 | Ollama server log, CPU mode | `.run/ollama-cpu.log` | only when `run.sh` started the server |
 | Ollama system service log, Linux | `journalctl -u ollama -f` | when the server was already running |
 | Ollama app log, macOS | `~/.ollama/logs/server.log` | when the server was already running |
+| CLM client install errors | `.run/clm-install.log` | when the CLM client install fails |
+| CLM encoder or heads download errors | `.run/clm-download.log` | when a CLM download runs (empty on success) |
+| Laya checkpoint download output | `.run/laya-download.log` | every setup run (library warnings, or the error that stopped the run) |
 | Decision records | wherever `--jsonl PATH` points | only with `--jsonl` |
 
 Each run log starts with a header line: the arguments, a UTC timestamp and the git commit. Colour codes are stripped from the file.
@@ -148,7 +153,7 @@ Each run log starts with a header line: the arguments, a UTC timestamp and the g
 | Install stamp (why a re-install did or did not happen) | `.venv-<mode>/.hir-stamp` |
 | Ollama models, user instance | `~/.ollama/models` |
 | Ollama models, Linux system service | `/usr/share/ollama/.ollama/models` |
-| Laya checkpoints | `~/.cache/huggingface/hub/models--convaiinnovations--laya*` |
+| Laya checkpoints | `~/.cache/huggingface/hub/models--convaiinnovations--laya` (and `--laya-multilingual` once a non-English message loads it) |
 | CLM encoder GGUF and Modelfile | `models/clm/` |
 | CLM projection heads | `~/.cache/clm/CLM_v0.1-8B.pt` (override with `CLM_CKPT_DIR`) |
 
@@ -160,11 +165,13 @@ Everything in the repo root above (`.run/`, `.venv-*`, `models/`, `*.jsonl`) is 
 
 | Layer | How | Where it shows up |
 |---|---|---|
-| The router and Python libraries (Laya, TypeSafe SDK, HTTP clients) | `HIR_LOG_LEVEL=DEBUG ./run.sh --no-setup` | terminal and `.run/latest.log` |
+| The router and Python libraries (TypeSafe SDK, HTTP clients) | `HIR_LOG_LEVEL=DEBUG ./run.sh --no-setup` | terminal and `.run/latest.log` |
 | TypeSafe SDK only | `TYPESAFE_LOG_LEVEL=debug` | terminal and `.run/latest.log` |
 | Ollama server started by `run.sh` | `OLLAMA_DEBUG=1 ./run.sh --no-setup` | `.run/ollama-<mode>.log` |
 | Ollama system service (Linux) | `sudo systemctl edit ollama`, add `Environment="OLLAMA_DEBUG=1"`, restart | `journalctl -u ollama` |
-| The shell script itself | `bash -x ./run.sh --no-setup` | terminal and `.run/latest.log` |
+| The shell script itself | `bash -x ./run.sh --no-setup` | terminal, and `.run/latest.log` from the point the log is opened |
+
+Laya reports through Python warnings, which always print; they are not affected by `HIR_LOG_LEVEL`.
 
 `HIR_LOG_LEVEL=DEBUG` is noisy (every HTTP request). Use it to see which request failed, then turn it off.
 
@@ -198,22 +205,23 @@ tail -n 50 .run/latest.log
 **`[FAIL] HIR_DEVICE=cuda but torch cannot see a CUDA device`**
 - `nvidia-smi` should list the GPU. If it does, the torch build and driver disagree:
   `.venv-gpu/bin/python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"`
-- Old driver: upgrade it, or `rm -rf .venv-gpu && TORCH_INDEX_URL=https://download.pytorch.org/whl/cu118 ./run.sh`.
+- Old driver: upgrade it, or `rm -rf .venv-gpu && TORCH_INDEX_URL=https://download.pytorch.org/whl/cuXXX ./run.sh`, with the `cuXXX` that matches your driver from https://pytorch.org/get-started/locally/
 
-**`fail Laya checkpoint download failed`**
+**`fail Laya checkpoint download failed (...)`**
+- The last line of the error is in the message; the full output is in `.run/laya-download.log`.
 - Needs `huggingface.co`. Behind a proxy, set `HTTPS_PROXY`. If rate-limited, set `HF_TOKEN`.
 - Test it: `curl -sI https://huggingface.co/convaiinnovations/laya | head -1`.
 
 **`CLM branch: skipped (...)`**
-- `skipped (disabled)`: `--skip-clm`, or `run.sh` decided RAM or disk was too low; the run log says which (`warn CLM needs ...`).
-- `skipped (EmbedderError)`: the encoder is not served. Check `ollama list | grep clm-encoder`, then probe it:
+- `skipped (disabled)`: `--skip-clm`; or setup found RAM or disk too low (`warn CLM needs ...`); or the CLM client install or a download failed (`warn CLM ... failed`, details in `.run/clm-install.log` or `.run/clm-download.log`). `grep -i clm .run/latest.log` shows which.
+- `skipped (EmbedderError)`: the encoder is not served. Check `ollama list | grep clm-encoder`, then probe it (`:11435` in CPU mode):
   `curl -s http://127.0.0.1:11434/v1/embeddings -d '{"model": "clm-encoder", "input": ["hi"]}' | head -c 200`
-- `skipped (ModuleNotFoundError)`: the CLM client did not install (needs `git`). Re-run setup.
+- `skipped (ModuleNotFoundError)`: the CLM client is not installed, usually because the run used `--no-setup` after a `--skip-clm` setup. Re-run without `--no-setup` (needs `git`).
 - Never name a local file `clm.py`: it shadows the package.
 
 **A tier raises an HTTP error mid-cascade**
 - Jev tier: `HIR_LOG_LEVEL=DEBUG ./run.sh --no-setup --query "..."` shows the `/v1/systemone` request and status. A 404 means the server is older than 0.35 or the model name is wrong.
-- Tier 4: probe the chat endpoint directly:
+- Tier 4: probe the chat endpoint directly (`:11435` in CPU mode):
   `curl -s http://127.0.0.1:11434/api/chat -d '{"model": "qwen3:0.6b", "stream": false, "messages": [{"role": "user", "content": "hi"}]}' | head -c 300`
 
 **The first request is slow, or times out**

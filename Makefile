@@ -25,7 +25,7 @@ help:
 	@echo "    make test-installer  run.sh end to end against a stand-in Ollama and Laya (Linux)"
 	@echo "    make lint          shellcheck run.sh (if installed)"
 	@echo ""
-	@echo "    make clean         Remove caches and Ollama logs"
+	@echo "    make clean         Remove caches and every log under .run/"
 	@echo "    make clean-all     clean + both venvs and the downloaded CLM encoder"
 	@echo ""
 	@echo "  Anything more specific: ./run.sh --help"

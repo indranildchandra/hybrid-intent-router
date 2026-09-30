@@ -50,10 +50,10 @@ That is the whole setup. The script is idempotent: the second run skips every in
 | Requirement | Needed for | Notes |
 |---|---|---|
 | Linux or macOS | always | Windows: use WSL2 (Ubuntu) and run `./run.sh` inside it |
-| `bash`, `curl` | always | `git` too if you want the CLM branch |
+| `bash`, `curl` | always | `git` too if you want the CLM branch; `perl` (preinstalled on Linux and macOS) strips colour codes from the run log |
 | Python 3.10 to 3.13 | always | `run.sh` picks 3.12, 3.11, 3.13 or 3.10, in that order. Uses `uv` when present, else `venv` + `pip` |
 | Ollama 0.35 or later | always | Installed automatically if missing (official script on Linux, Homebrew on macOS). 0.35 is the first release serving the `/v1/systemone` API |
-| NVIDIA GPU + driver | GPU mode on Linux | Driver must support the CUDA 12.x build of PyTorch. No GPU found: `run.sh` falls back to CPU with a warning |
+| NVIDIA GPU + driver | GPU mode on Linux | Driver new enough for the CUDA build of the default PyPI torch wheel (CUDA 13.0 for torch 2.14; check with `torch.version.cuda`). No GPU found: `run.sh` falls back to CPU with a warning |
 | Apple Silicon | GPU mode on macOS | Laya runs on MPS, Ollama on Metal |
 | ~6 GB disk | always | PyTorch, Laya checkpoints, `tev1:0.8b`, `qwen3:0.6b` |
 | 16 GB RAM, ~10 GB more disk | CLM branch only | Skipped automatically below 15 GiB RAM or 10 GB free disk. The cascade runs without it |
@@ -62,12 +62,14 @@ That is the whole setup. The script is idempotent: the second run skips every in
 ### What `run.sh` does
 
 1. Detects the platform, GPU (`nvidia-smi` or Apple Silicon) and RAM. No usable GPU: it falls back to CPU automatically, exactly as if you had passed `--cpu`.
-2. Creates a Python environment per mode (`.venv-gpu` or `.venv-cpu`) and installs PyTorch (CUDA/MPS build for GPU, CPU wheel for CPU), the requirements, and the CLM client without vLLM.
-3. Installs Ollama if missing, checks the client and the server are both 0.35 or later, and starts a server only if none is running: the standard port 11434 in GPU mode, or a private CPU-only instance on port 11435 in CPU mode (every accelerator hidden). A server that was already running is reused and left running. A server `run.sh` started is stopped when the script exits, on success, failure or Ctrl-C, model runners included.
+2. Creates a Python environment per mode (`.venv-gpu` or `.venv-cpu`) and installs PyTorch (CUDA/MPS build for GPU, CPU wheel for CPU) and the requirements. Skipped on later runs unless `requirements.txt`, the mode or `TORCH_INDEX_URL` changed.
+3. Installs Ollama if missing, checks the client and the server are both 0.35 or later, and starts a server only if none is running: the standard port 11434 in GPU mode, or a private CPU-only instance on port 11435 in CPU mode (every accelerator hidden). A server that was already running is reused and left running. A server `run.sh` started is stopped when the script exits, on success, failure, Ctrl-C or SIGTERM, model runners included (`--keep-ollama` to leave it up).
 4. Pulls `tev1:0.8b` (Jev-compatible decision model) and `qwen3:0.6b` (Tier 4 stand-in).
-5. If RAM and disk allow, downloads the 8-bit CLM encoder GGUF (8.25 GB, resumable), registers it with Ollama as `clm-encoder` and fetches the CLM projection heads.
+5. If RAM (15 GiB) and disk (10 GB free) allow, installs the CLM client without vLLM (needs `git`), downloads the 8-bit CLM encoder GGUF (8.25 GB, resumable), registers it with Ollama as `clm-encoder` and fetches the CLM projection heads. Any failure here skips Tier 3A with a one-line warning instead of stopping the run.
 6. Downloads the pinned Laya checkpoint from Hugging Face.
 7. Runs the preflight doctor, then routes the Appendix B demo set.
+
+Everything it prints is also saved to `.run/run-<timestamp>.log` (`.run/latest.log` points at the newest). [`RUNBOOK.md`](RUNBOOK.md) maps every log.
 
 ### Options
 
@@ -83,11 +85,13 @@ That is the whole setup. The script is idempotent: the second run skips every in
   --no-setup      Skip installation; start Ollama if needed and route
   --test          Run all test suites (unit, plus live against the Ollama this run started)
   --keep-ollama   Leave an Ollama server this script started running after exit
+  -h, --help      Show the help
 
 Router args (passed through):
   --query TEXT    Route one message instead of the demo set
   --meta JSON     Metadata for that message, e.g. '{"user_tier": "Enterprise", "failed_logins": 5}'
   --jsonl PATH    Append every full decision record to a JSONL file
+  --shadow-rate X Share of confident Tier 2/3 decisions re-checked by Tier 4 (default 0.02)
 ```
 
 ```bash
@@ -228,10 +232,11 @@ Every knob is an environment variable, read in `src/hybrid_intent_router/config.
 | `HIR_DISABLE_CLM` | `0` | `1` skips Tier 3A without probing the encoder (`--skip-clm`) |
 | `HIR_USE_TYPESAFE` | `0` | `1` sends Tier 3C to managed Jev. Needs `TYPESAFE_API_KEY` |
 | `HIR_TYPESAFE_MODEL` | `jev-1.13.0` | Managed Jev model, pinned |
-| `TORCH_INDEX_URL` | per mode | Override the PyTorch wheel index, e.g. `https://download.pytorch.org/whl/cu118` for older drivers |
+| `TORCH_INDEX_URL` | per mode | Override the PyTorch wheel index: the CPU index is used for `--cpu` on Linux, PyPI otherwise. For an older NVIDIA driver, pick the `cuXXX` index that matches it from https://pytorch.org/get-started/locally/ |
 | `HF_TOKEN` | unset | Hugging Face token, if anonymous downloads get rate-limited |
+| `HIR_LOG_LEVEL` | `WARNING` | Python log level for the router and its libraries (`DEBUG` shows every HTTP request) |
 
-Laya checkpoints are pinned to the reviewed commits shipped in `laya.PINNED_REVISIONS` for laya 0.3.22, and the CLM client is pinned to a commit. Pinning is part of the explanation, not housekeeping.
+Laya checkpoints are pinned to the reviewed commits shipped in `laya.PINNED_REVISIONS` for laya 0.3.22, loaded from their per-checkpoint repositories (`standalone_repos=True`) because that is what those commits refer to, and the CLM client is pinned to a commit. Pinning is part of the explanation, not housekeeping.
 
 ---
 
@@ -249,7 +254,7 @@ Laya checkpoints are pinned to the reviewed commits shipped in `laya.PINNED_REVI
 
 **GPU and CPU**
 
-- **Old NVIDIA driver.** The default PyTorch wheel targets CUDA 12.x. If `make check` says torch cannot see a CUDA device, upgrade the driver or set `TORCH_INDEX_URL` to a matching `cuXXX` index and delete `.venv-gpu`.
+- **Old NVIDIA driver.** The default PyPI torch wheel is built for a recent CUDA (13.0 for torch 2.14). If `make check` says torch cannot see a CUDA device, upgrade the driver, or delete `.venv-gpu` and re-run with `TORCH_INDEX_URL` set to the `cuXXX` index that matches your driver (https://pytorch.org/get-started/locally/).
 - **AMD/ROCm.** Ollama uses your GPU; Laya runs on CPU with the default torch wheel. For ROCm torch, set `TORCH_INDEX_URL` to a ROCm index.
 - **Apple Silicon and `--cpu`.** Ollama on macOS uses Metal regardless of environment variables. `--cpu` moves Laya and CLM to CPU, and Tier 4 sends `num_gpu: 0` per request, but the decision model served over `/v1/systemone` still uses Metal.
 - **GPU and CPU numbers differ slightly.** On CUDA and MPS Laya runs under fp16 autocast; on CPU it runs in fp32. Probabilities can shift in the second or third decimal, which matters only for requests sitting right on a threshold.
@@ -258,7 +263,7 @@ Laya checkpoints are pinned to the reviewed commits shipped in `laya.PINNED_REVI
 
 - **The first request is slow.** Ollama loads each model into memory on first use (the SDK timeout is 120 s), and Laya loads its checkpoint into memory when the router starts. Measure latency after warm-up.
 - **Laya prints a temperature warning.** Expected. The checkpoint ships temperature values outside their valid range, and confidence from the affected entries should be treated as uncalibrated. Fit temperatures on your own labelled holdout (`laya.fit_temperatures`) before any threshold means anything.
-- **`CLM branch: skipped (EmbedderError)`.** The encoder is not served (low RAM, `--skip-clm`, or the download failed). The cascade degrades by design; check `make check` for the reason.
+- **`CLM branch: skipped (...)`.** `disabled` means `--skip-clm`, or setup skipped CLM for low RAM or disk, or a CLM download or install failed; the `warn` line in `.run/latest.log` says which, and `.run/clm-download.log` or `.run/clm-install.log` has the details. `EmbedderError` means the encoder is not served. The cascade degrades by design.
 - **Do not name a local file `clm.py`.** It shadows the CLM package and Tier 3A silently skips.
 - **The Tier 2 models are toy-sized on purpose.** 24 TF-IDF rows and 6 CatBoost rows reproduce the article; they are not a router. The `text_processing` block in CatBoost exists only because its default dictionary fails on a handful of rows. Remove it once you train on real volume.
 - **`multi_class="multinomial"`** in older scikit-learn snippets raises a `TypeError` on 1.8+. The lbfgs solver is multinomial by default.
@@ -289,14 +294,14 @@ Operating the repo (every run command, debugging, where each log lives) is in [`
 ## Testing
 
 ```bash
-make test         # every suite this machine can run; the live suite auto-skips without Ollama
+make test         # every suite; the live suite runs only if an Ollama is already up on HIR_OLLAMA_URL (default :11434)
 make test-unit    # offline: Tier 1 rules, Tier 2 models, calibration, cascade ordering (model tiers faked)
 make test-live    # the real cascade via run.sh: Ollama started only if needed, every suite, then stopped (make test-live-cpu to force CPU)
-make test-installer  # run.sh end to end against a stand-in Ollama and Laya: 35 checks, no model downloads (Linux)
+make test-installer  # run.sh end to end against a stand-in Ollama and Laya: 35 checks, no model downloads (Linux; installs .venv-cpu on first use)
 make lint         # shellcheck run.sh
 ```
 
-- **`unit`**: the `/cancellation` prefix regression, the input cap, TF-IDF and CatBoost reproducing the article's probabilities and SHAP attribution, ECE and the threshold sweep reproducing the article's numbers, and the cascade contract (guardrail overrides Tier 1, tiers fall through only on abstention, every exit writes a complete record, shadow sampling only on confident upper tiers).
+- **`unit`**: the CLI (`--query`, `--meta`, `--jsonl`, the seven-request demo set), the `/cancellation` prefix regression, the input cap, TF-IDF and CatBoost reproducing the article's probabilities and SHAP attribution, ECE and the threshold sweep reproducing the article's numbers, and the cascade contract (guardrail overrides Tier 1, tiers fall through only on abstention, every exit writes a complete record, shadow sampling only on confident upper tiers).
 - **`live`**: the guardrail blocks the privilege-escalation request and every demo request exits with a target and a reason.
 - **Installer scenarios** (`tests/installer/`): the real `run.sh` against a stand-in Ollama that serves the same HTTP endpoints (`/api/tags`, `/v1/systemone` in the TypeSafe SDK's schema, `/api/chat`, `/v1/embeddings`) and a stand-in Laya. It covers install idempotency, GPU-to-CPU fallback, reusing a running server and leaving it alone, stopping a server it started on success, failure, Ctrl-C (a real `^C` through a pseudo-terminal) and SIGTERM with runner children included, `--keep-ollama`, `HIR_OLLAMA_URL`, missing models, a port held by something else, run-log retention and colour stripping, router argument pass-through, and the make targets.
 
@@ -310,6 +315,9 @@ CI (`.github/workflows/ci.yml`) runs the unit suite on Python 3.11 and 3.12, che
 |---|---|
 | `run.sh` | One-click installer and runner. GPU by default with CPU fallback, `--cpu` to force CPU, `--skip-clm` in either mode |
 | `Makefile` | The same flows as named targets (`make help`) |
+| `pyproject.toml`, `requirements.txt`, `requirements-dev.txt` | Package metadata and dependencies (torch is installed by `run.sh`); `requirements-dev.txt` is the CI set for the unit suite |
+| `pytest.ini` | Test config: `src/` on the path, `unit` and `live` markers |
+| `.github/workflows/ci.yml` | Unit suite on 3.11 and 3.12, calibration check, shellcheck, installer scenarios |
 | `src/hybrid_intent_router/config.py` | Every knob, read from `HIR_*` environment variables |
 | `src/hybrid_intent_router/records.py` | The decision record every exit writes |
 | `src/hybrid_intent_router/tier1_deterministic.py` | Exact-token command match and bounded regex |
@@ -321,12 +329,13 @@ CI (`.github/workflows/ci.yml`) runs the unit suite on Python 3.11 and 3.12, che
 | `src/hybrid_intent_router/cascade.py` | `HybridRouter`: ordering, guardrail, shadow sampling |
 | `src/hybrid_intent_router/calibration.py` | ECE and threshold sweep |
 | `src/hybrid_intent_router/doctor.py` | Preflight checks |
-| `src/hybrid_intent_router/__main__.py` | CLI: demo set, `--query`, `--jsonl` |
+| `src/hybrid_intent_router/__main__.py` | CLI: demo set, `--query`, `--meta`, `--jsonl`, `--shadow-rate`, `HIR_LOG_LEVEL` |
 | `tests/` | `unit` and `live` suites |
 | `tests/installer/` | `run.sh` scenarios against a stand-in Ollama and Laya |
 | `RUNBOOK.md` | How to run, debug and find every log |
 | `DEMO-RUNBOOK.md` | Step-by-step walkthrough, tier by tier |
 | `CLAUDE.md` | Context for coding agents working in this repo |
+| `.run/`, `.venv-gpu/`, `.venv-cpu/`, `models/` | Created at runtime (logs, environments, CLM encoder); gitignored |
 
 ---
 

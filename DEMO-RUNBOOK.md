@@ -24,7 +24,7 @@ The redesign asks a different question for each request: what is the cheapest en
 ./run.sh --setup-only      # or: make setup   (force CPU: ./run.sh --cpu --setup-only)
 ```
 
-The last lines must read:
+The preflight block must read:
 
 ```text
 ==> Preflight

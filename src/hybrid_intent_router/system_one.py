@@ -16,7 +16,10 @@ def laya():
     from laya import Router
 
     # Pinned checkpoints for replayability. The first call downloads them from Hugging Face.
-    return Router(revisions=LAYA_REVISIONS, device=torch_device())
+    # standalone_repos=True: the pinned SHAs are per repository (laya, laya-multilingual). The
+    # default bundle layout serves multilingual from a subfolder of the laya repo, where the
+    # laya-multilingual SHA does not apply, so the first non-English request would fail to load.
+    return Router(revisions=LAYA_REVISIONS, device=torch_device(), standalone_repos=True)
 
 
 GUARD_QUESTIONS = {

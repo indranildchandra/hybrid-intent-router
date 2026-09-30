@@ -9,8 +9,9 @@
 # Logs, all under .run/ at the repo root (created by this script, gitignored):
 #   run-<timestamp>.log / latest.log   full output of every run (last 20 kept)
 #   ollama-<mode>.log                  Ollama server log, only when this script started the server
+#   clm-install.log, clm-download.log, laya-download.log   setup errors, summarised in one line
 # Ollama: started only if nothing is running on the port; a server this script started is stopped
-# on exit (success, failure, Ctrl-C). A server that was already running is reused and left alone.
+# on exit (success, failure, Ctrl-C, SIGTERM). A server that was already running is reused and left alone.
 #
 # Idempotent: re-running skips everything already installed, pulled or downloaded.
 set -Eeuo pipefail
@@ -64,6 +65,7 @@ ${B}Router args${R} (anything else is passed to python -m hybrid_intent_router)
   --query TEXT    Route one message instead of the Appendix B demo set.
   --meta JSON     Metadata for that message, e.g. '{"user_tier": "Enterprise", "failed_logins": 5}'.
   --jsonl PATH    Append every full decision record to a JSONL file.
+  --shadow-rate X Share of confident Tier 2/3 decisions re-checked by Tier 4 (default 0.02).
 
 ${B}Examples${R}
   ./run.sh
@@ -167,8 +169,8 @@ find_python() {
   done
   return 1
 }
-VENV="$ROOT/.venv-$MODE"
-PIP=()   # separate envs: a CPU torch wheel in a GPU env silently runs on CPU
+VENV="$ROOT/.venv-$MODE"   # separate envs: a CPU torch wheel in a GPU env silently runs on CPU
+PIP=()
 PY="$VENV/bin/python"
 
 setup_python() {
