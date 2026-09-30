@@ -544,7 +544,8 @@ tail -n 50 .run/latest.log
 
 **Pulling a model fails (`pull model manifest ... connection reset by peer`, or `fail Could not pull ...`)**
 - The Ollama server downloads models from `registry.ollama.ai`, and something between the server and the registry dropped the connection. On corporate networks and VPNs this is the usual cause. `run.sh` has already retried 4 times.
-- Check the path: `curl -sI https://registry.ollama.ai/v2/ | head -1`. Any HTTP status line means it is reachable; a reset or a timeout means the network is blocking it.
+- Check the path: `curl -sI https://registry.ollama.ai/v2/ | head -1`. Any HTTP status line means the registry is reachable, and `HTTP/2 404` is the normal answer for that bare path. A connection reset or a timeout, with no status line, means the network is blocking it.
+- Then check a real model manifest, which is what the pull fetches first: `curl -s -o /dev/null -w "%{http_code}\n" https://registry.ollama.ai/v2/library/qwen3/manifests/0.6b` should print `200`. If the first check works but pulls still reset, the drop is happening mid-download: re-run, since `run.sh` retries and Ollama resumes partial downloads, and read `.run/ollama-<mode>.log` for the server's own error.
 - Try off the VPN or on another network. If you need a proxy, export `HTTPS_PROXY` in the shell that starts the server: the server does the download, not the `ollama pull` command. For the macOS app or the Linux service, set it in their environment instead.
 - Pull by hand, with a server running ([Step 4](#step-4-start-the-ollama-server-if-it-is-not-already-running)); re-run a pull that fails, as partial downloads resume:
 
