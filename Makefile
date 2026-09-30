@@ -1,27 +1,27 @@
-.PHONY: help setup setup-cpu run run-cpu check check-cpu test test-unit test-live calibration lint clean clean-all
+.PHONY: help setup setup-gpu run run-gpu check check-gpu test test-unit test-live test-live-gpu calibration lint clean clean-all
 
 PY_GPU := .venv-gpu/bin/python
 PY_CPU := .venv-cpu/bin/python
-PY     := $(if $(wildcard $(PY_GPU)),$(PY_GPU),$(if $(wildcard $(PY_CPU)),$(PY_CPU),python3))
+PY     := $(if $(wildcard $(PY_CPU)),$(PY_CPU),$(if $(wildcard $(PY_GPU)),$(PY_GPU),python3))
 export PYTHONPATH := $(CURDIR)/src
 
 help:
 	@echo "hybrid-intent-router: targets"
 	@echo ""
 	@echo "  Setup (one time; idempotent)"
-	@echo "    make setup         GPU: install deps, Ollama, models, CLM encoder; run preflight"
-	@echo "    make setup-cpu     Same, CPU only (CPU torch wheel, private CPU Ollama on :11435)"
+	@echo "    make setup         CPU (default): install deps, Ollama, models, CLM encoder; run preflight"
+	@echo "    make setup-gpu     Same, on GPU (CUDA or Apple Silicon)"
 	@echo ""
 	@echo "  Run"
-	@echo "    make run           Route the Appendix B demo set on GPU"
-	@echo "    make run-cpu       Route the Appendix B demo set on CPU"
+	@echo "    make run           Route the Appendix B demo set on CPU"
+	@echo "    make run-gpu       Route the Appendix B demo set on GPU"
 	@echo "    make calibration   ECE + threshold sweep on the article's synthetic holdout"
 	@echo ""
 	@echo "  Verify"
-	@echo "    make check         Preflight doctor against the running Ollama"
-	@echo "    make test          Every suite this machine can run (live suite auto-skips)"
+	@echo "    make check         Preflight doctor (CPU setup); make check-gpu for GPU"
+	@echo "    make test          Every suite; the live suite skips unless Ollama is already up"
 	@echo "    make test-unit     Offline unit tests: no GPU, Ollama or Hugging Face"
-	@echo "    make test-live     The real cascade against Ollama and Laya"
+	@echo "    make test-live     Unit + live suites with Ollama started by run.sh (CPU; -gpu for GPU)"
 	@echo "    make lint          shellcheck run.sh (if installed)"
 	@echo ""
 	@echo "    make clean         Remove caches and Ollama logs"
@@ -32,20 +32,20 @@ help:
 setup:
 	./run.sh --setup-only
 
-setup-cpu:
-	./run.sh --cpu --setup-only
+setup-gpu:
+	./run.sh --gpu --setup-only
 
 run:
 	./run.sh --no-setup
 
-run-cpu:
-	./run.sh --cpu --no-setup
+run-gpu:
+	./run.sh --gpu --no-setup
 
 check:
-	$(PY) -m hybrid_intent_router.doctor
+	HIR_OLLAMA_URL=http://127.0.0.1:11435 HIR_DEVICE=cpu $(PY_CPU) -m hybrid_intent_router.doctor
 
-check-cpu:
-	HIR_OLLAMA_URL=http://127.0.0.1:11435 HIR_DEVICE=cpu $(PY) -m hybrid_intent_router.doctor
+check-gpu:
+	$(PY_GPU) -m hybrid_intent_router.doctor
 
 test:
 	$(PY) -m pytest
@@ -54,7 +54,10 @@ test-unit:
 	$(PY) -m pytest -m unit
 
 test-live:
-	$(PY) -m pytest -m live
+	./run.sh --no-setup --setup-only --test
+
+test-live-gpu:
+	./run.sh --gpu --no-setup --setup-only --test
 
 calibration:
 	$(PY) -m hybrid_intent_router.calibration

@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # hybrid-intent-router: one command from a clean machine to a routed decision.
 #
-#   ./run.sh            GPU (CUDA on Linux, Metal/MPS on Apple Silicon). Falls back to CPU if no GPU.
-#   ./run.sh --cpu      CPU only, including a private CPU-only Ollama instance on port 11435.
+#   ./run.sh            CPU (default): CPU torch wheel, private CPU-only Ollama instance on port 11435.
+#   ./run.sh --gpu      GPU on demand: CUDA on Linux, Metal/MPS on Apple Silicon. Falls back to CPU if no GPU.
+#   ./run.sh --skip-clm Either mode, without the 8.25 GB CLM encoder.
+#
+# Ollama server logs: .run/ollama-<mode>.log at the repo root, created by this script, written only
+# when this script starts the server itself.
 #
 # Idempotent: re-running skips everything already installed, pulled or downloaded.
 set -Eeuo pipefail
@@ -38,14 +42,16 @@ usage() {
 ${B}Usage:${R} ./run.sh [options] [-- router args]
 
 ${B}Modes${R}
-  (default)       GPU: CUDA on Linux/NVIDIA, Metal/MPS on Apple Silicon. Falls back to CPU if none found.
-  --cpu           CPU only: CPU torch wheel, Laya/CLM on CPU, private CPU-only Ollama on port $CPU_PORT.
+  (default)       CPU: CPU torch wheel, Laya/CLM on CPU, private CPU-only Ollama on port $CPU_PORT.
+  --gpu           GPU: CUDA on Linux/NVIDIA, Metal/MPS on Apple Silicon, Ollama on port $GPU_PORT.
+                  Falls back to CPU if no GPU is found.
+  --cpu           Explicit CPU (same as the default).
 
 ${B}Options${R}
   --skip-clm      Do not download or serve the 8.25 GB CLM encoder (Tier 3A is skipped at runtime).
   --setup-only    Install and download everything, run the preflight doctor, then stop.
   --no-setup      Skip installation; just start Ollama if needed and run the router.
-  --test          Run the offline unit tests after setup.
+  --test          Run all test suites (unit, plus live against the Ollama this run started).
   --keep-ollama   Leave an Ollama server this script started running after exit.
   -h, --help      Show this help.
 
@@ -56,13 +62,14 @@ ${B}Router args${R} (anything else is passed to python -m hybrid_intent_router)
 
 ${B}Examples${R}
   ./run.sh
-  ./run.sh --cpu --skip-clm
+  ./run.sh --skip-clm
+  ./run.sh --gpu
   ./run.sh --query "We were billed twice. Refund it today or we cancel." --jsonl decisions.jsonl
 EOF
 }
 
 # ----------------------------------------------------------------------------- arguments
-MODE="gpu"; SKIP_CLM=0; SETUP_ONLY=0; NO_SETUP=0; RUN_TESTS=0; KEEP_OLLAMA=0; PY_ARGS=()
+MODE="cpu"; SKIP_CLM=0; SETUP_ONLY=0; NO_SETUP=0; RUN_TESTS=0; KEEP_OLLAMA=0; PY_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --cpu) MODE="cpu" ;;
@@ -111,7 +118,7 @@ elif have nvidia-smi && nvidia-smi -L >/dev/null 2>&1; then
 fi
 RAM_GB="$(ram_gb)"
 if [[ "$MODE" == "gpu" && "$GPU_KIND" == "none" ]]; then
-  warn "GPU mode requested but no NVIDIA GPU (nvidia-smi) or Apple Silicon found. Falling back to --cpu."
+  warn "GPU mode requested but no NVIDIA GPU (nvidia-smi) or Apple Silicon found. Falling back to CPU."
   warn "AMD/ROCm users: Ollama will still use your GPU; Laya runs on CPU with the default torch wheel."
   MODE="cpu"
 fi
@@ -226,7 +233,7 @@ start_ollama() {
   elif http_ok "$url/api/version"; then
     ok "reusing Ollama already running on :$port"
   else
-    log "Starting Ollama on :$port ($MODE)"
+    log "Starting Ollama on :$port ($MODE), logging to $STATE_DIR/ollama-$MODE.log"
     if [[ "$MODE" == "cpu" ]]; then
       # Hide every accelerator from this instance so decision models and the fallback run on CPU.
       # On Apple Silicon Ollama still uses Metal; Tier 4 additionally sends num_gpu=0 per request.
@@ -330,7 +337,7 @@ if [[ "$NO_SETUP" == "0" ]]; then
   install_ollama
   check_client_version
 fi
-[[ -x "$PY" ]] || die "No environment at $VENV. Run ./run.sh$([[ "$MODE" == "cpu" ]] && echo " --cpu") without --no-setup first."
+[[ -x "$PY" ]] || die "No environment at $VENV. Run ./run.sh$([[ "$MODE" == "gpu" ]] && echo " --gpu") without --no-setup first."
 have ollama || die "Ollama is not installed. Run without --no-setup."
 
 if [[ "$MODE" == "cpu" ]]; then start_ollama "$CPU_PORT"; else start_ollama "$GPU_PORT"; fi
@@ -353,7 +360,7 @@ if [[ "$RUN_TESTS" == "1" ]]; then
 fi
 
 if [[ "$SETUP_ONLY" == "1" ]]; then
-  ok "Setup complete. Run ./run.sh$([[ "$MODE" == "cpu" ]] && echo " --cpu") --no-setup to route."
+  ok "Setup complete. Run ./run.sh$([[ "$MODE" == "gpu" ]] && echo " --gpu") --no-setup to route."
   exit 0
 fi
 
