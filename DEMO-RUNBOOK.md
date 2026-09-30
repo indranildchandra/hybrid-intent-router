@@ -2,10 +2,10 @@
 
 A step-by-step guide to running the cascade and explaining what each tier demonstrates. Follow it to reproduce Appendix B yourself, or to walk a team through it. Every command is included; expected output is given where it is deterministic.
 
-Commands below use the default CPU mode. For GPU, add `--gpu` to every `run.sh` call and use the `-gpu` make targets. Once setup has run, `$PY` means `.venv-cpu/bin/python` (or `.venv-gpu/bin/python`), with `PYTHONPATH=src` exported.
+Commands below use the default GPU mode, which falls back to CPU on machines without a GPU. To force CPU, add `--cpu` to every `run.sh` call and use the `-cpu` make targets. Once setup has run, `$PY` means `.venv-gpu/bin/python`, or `.venv-cpu/bin/python` if you ran with `--cpu` or the machine fell back to CPU, with `PYTHONPATH=src` exported.
 
 ```bash
-export PY=.venv-cpu/bin/python PYTHONPATH=src
+export PY=.venv-gpu/bin/python PYTHONPATH=src   # or .venv-cpu/bin/python
 ```
 
 ---
@@ -21,7 +21,7 @@ The redesign asks a different question for each request: what is the cheapest en
 ## 0. One-time setup
 
 ```bash
-./run.sh --setup-only      # or: make setup   (GPU: ./run.sh --gpu --setup-only)
+./run.sh --setup-only      # or: make setup   (force CPU: ./run.sh --cpu --setup-only)
 ```
 
 The last lines must read:
@@ -29,12 +29,12 @@ The last lines must read:
 ```text
 ==> Preflight
 hybrid-intent-router doctor
-  [ok] torch ..., HIR_DEVICE=cpu -> cpu
+  [ok] torch ..., HIR_DEVICE=cuda -> cuda     (cpu on CPU)
   [ok] import laya
   [ok] import typesafe_sdk
   [ok] import catboost
   [ok] import sklearn
-  [ok] Ollama 0.35.x at http://127.0.0.1:11435
+  [ok] Ollama 0.35.x at http://127.0.0.1:11434   (:11435 on CPU)
   [ok] model qwen3:0.6b
   [ok] model tev1:0.8b
   [ok] model clm-encoder          (or: [warn] ... Tier 3A (CLM) will be skipped)
@@ -45,7 +45,7 @@ Verify before a live session:
 
 ```bash
 make test-unit    # offline, seconds
-make test-live    # real models: run.sh starts Ollama, runs every suite, stops it
+make test-live    # real models via run.sh: Ollama only started if needed, stopped after
 ```
 
 ---

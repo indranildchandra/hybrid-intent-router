@@ -41,3 +41,9 @@ jobs:
         run: shellcheck -S warning run.sh
       - name: run.sh --help
         run: ./run.sh --help
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer scenarios (real run.sh, stand-in Ollama and Laya, no model downloads)
+        run: bash tests/installer/run_scenarios.sh

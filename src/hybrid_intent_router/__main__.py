@@ -4,6 +4,8 @@ Without --query, routes the seven requests from Appendix B and prints one line p
 """
 import argparse
 import json
+import logging
+import os
 import sys
 
 DEMO_REQUESTS = [
@@ -25,6 +27,9 @@ def main(argv=None) -> int:
     ap.add_argument("--jsonl", help="append every full decision record to this JSONL file")
     ap.add_argument("--shadow-rate", type=float, help="override HIR_SHADOW_RATE for this run")
     args = ap.parse_args(argv)
+    # HIR_LOG_LEVEL=DEBUG surfaces library logs too (laya, typesafe_sdk, urllib3/httpx requests)
+    logging.basicConfig(level=os.environ.get("HIR_LOG_LEVEL", "WARNING").upper(),
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     from .cascade import HybridRouter
     from .config import SHADOW_RATE

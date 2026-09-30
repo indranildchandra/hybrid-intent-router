@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Stand-in `ollama` CLI for the installer scenarios. `serve` runs the stand-in HTTP server;
+# `pull`/`create` record models in $STUB_STATE so /api/tags reflects them.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STATE="${STUB_STATE:?STUB_STATE must be set}"; mkdir -p "$STATE"
+case "$1" in
+  --version) echo "ollama version is ${STUB_VERSION:-0.35.2}" ;;
+  serve) exec env STUB_STATE="$STATE" python3 "$HERE/stub_ollama_server.py" "${OLLAMA_HOST##*:}" ;;
+  pull) echo "pulling $2 (stub)"; touch "$STATE/${2//:/__}" ;;
+  create) echo "creating $2 (stub)"; touch "$STATE/${2}__latest" ;;
+  *) echo "stub ollama $*" ;;
+esac

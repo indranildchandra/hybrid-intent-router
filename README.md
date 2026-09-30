@@ -11,7 +11,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Runs on](https://img.shields.io/badge/runs%20on-CUDA%20%7C%20Apple%20Silicon%20%7C%20CPU-lightgrey)
 
-[Overview](#overview) · [Quickstart](#quickstart) · [The cascade](#the-cascade) · [Walkthrough](#walkthrough-seven-requests-seven-exits) · [Decision records](#what-counts-as-an-explanation) · [Configuration](#configuration) · [Gotchas](#gotchas-and-troubleshooting) · [Production](#from-demo-to-production) · [Testing](#testing) · [Layout](#repository-layout)
+[Overview](#overview) · [Quickstart](#quickstart) · [The cascade](#the-cascade) · [Walkthrough](#walkthrough-seven-requests-seven-exits) · [Decision records](#what-counts-as-an-explanation) · [Configuration](#configuration) · [Gotchas](#gotchas-and-troubleshooting) · [Runbook](RUNBOOK.md) · [Production](#from-demo-to-production) · [Testing](#testing) · [Layout](#repository-layout)
 
 </div>
 
@@ -28,7 +28,7 @@ What makes it different from a classifier with a fallback:
 - **Every exit writes the same decision record**: a fingerprint of what the router saw, the engine and version that decided, the policy version, the target and a reason rendered from the rule or probabilities that fired. Nothing in the reason is generated.
 - **System One models, not autoregressive ones, in the middle.** Laya and Jev read the input once and return calibrated probability distributions over options you define, in a single forward pass, without generating a token. CLM, a contrastive dual-encoder, handles large static catalogs.
 - **The frontier model is the reasoning layer of last resort.** If a request reaches it only to find out which handler it belongs to, that is a routing bug, not an AI feature.
-- **One command to run it.** `./run.sh` installs Ollama, pulls the models, builds a per-mode Python environment, runs a preflight doctor and routes the demo set. CPU by default so it runs on any laptop, `--gpu` when you have one.
+- **One command to run it.** `./run.sh` installs Ollama, pulls the models, builds a per-mode Python environment, runs a preflight doctor and routes the demo set. GPU by default, with automatic CPU fallback when the machine has no GPU; `--cpu` to force CPU.
 
 ---
 
@@ -38,8 +38,8 @@ What makes it different from a classifier with a fallback:
 git clone https://github.com/indranildchandra/hybrid-intent-router.git
 cd hybrid-intent-router
 
-./run.sh              # CPU (default): runs anywhere, private CPU-only Ollama on :11435
-./run.sh --gpu        # GPU on demand: CUDA on Linux/NVIDIA, Metal/MPS on Apple Silicon
+./run.sh              # GPU (default): CUDA on Linux/NVIDIA, Metal/MPS on Apple Silicon; CPU if no GPU
+./run.sh --cpu        # force CPU, with a private CPU-only Ollama on :11435
 ./run.sh --skip-clm   # either mode, without the 8.25 GB CLM encoder (combine freely)
 ```
 
@@ -53,17 +53,17 @@ That is the whole setup. The script is idempotent: the second run skips every in
 | `bash`, `curl` | always | `git` too if you want the CLM branch |
 | Python 3.10 to 3.13 | always | `run.sh` picks 3.12, 3.11, 3.13 or 3.10, in that order. Uses `uv` when present, else `venv` + `pip` |
 | Ollama 0.35 or later | always | Installed automatically if missing (official script on Linux, Homebrew on macOS). 0.35 is the first release serving the `/v1/systemone` API |
-| NVIDIA GPU + driver | `--gpu` on Linux | Driver must support the CUDA 12.x build of PyTorch. No GPU found: `run.sh` falls back to CPU with a warning |
-| Apple Silicon | `--gpu` on macOS | Laya runs on MPS, Ollama on Metal |
+| NVIDIA GPU + driver | GPU mode on Linux | Driver must support the CUDA 12.x build of PyTorch. No GPU found: `run.sh` falls back to CPU with a warning |
+| Apple Silicon | GPU mode on macOS | Laya runs on MPS, Ollama on Metal |
 | ~6 GB disk | always | PyTorch, Laya checkpoints, `tev1:0.8b`, `qwen3:0.6b` |
 | 16 GB RAM, ~10 GB more disk | CLM branch only | Skipped automatically below 15 GiB RAM or 10 GB free disk. The cascade runs without it |
 | Network to `pypi.org`, `ollama.com`, `huggingface.co`, `github.com` | first run | Plus `download.pytorch.org` for the CPU torch wheel on Linux |
 
 ### What `run.sh` does
 
-1. Detects the platform, GPU (`nvidia-smi` or Apple Silicon) and RAM. `--gpu` without a GPU falls back to CPU.
-2. Creates a Python environment per mode (`.venv-gpu` or `.venv-cpu`) and installs PyTorch (CPU wheel by default, CUDA/MPS build for `--gpu`), the requirements, and the CLM client without vLLM.
-3. Installs Ollama if missing, checks the client and the server are both 0.35 or later, and starts a server if none is running: a private CPU-only instance on port 11435 by default (every accelerator hidden), or the standard port 11434 with `--gpu`. When `run.sh` starts the server itself, its log goes to `.run/ollama-cpu.log` or `.run/ollama-gpu.log` in the repo root.
+1. Detects the platform, GPU (`nvidia-smi` or Apple Silicon) and RAM. No usable GPU: it falls back to CPU automatically, exactly as if you had passed `--cpu`.
+2. Creates a Python environment per mode (`.venv-gpu` or `.venv-cpu`) and installs PyTorch (CUDA/MPS build for GPU, CPU wheel for CPU), the requirements, and the CLM client without vLLM.
+3. Installs Ollama if missing, checks the client and the server are both 0.35 or later, and starts a server only if none is running: the standard port 11434 in GPU mode, or a private CPU-only instance on port 11435 in CPU mode (every accelerator hidden). A server that was already running is reused and left running. A server `run.sh` started is stopped when the script exits, on success, failure or Ctrl-C, model runners included.
 4. Pulls `tev1:0.8b` (Jev-compatible decision model) and `qwen3:0.6b` (Tier 4 stand-in).
 5. If RAM and disk allow, downloads the 8-bit CLM encoder GGUF (8.25 GB, resumable), registers it with Ollama as `clm-encoder` and fetches the CLM projection heads.
 6. Downloads the pinned Laya checkpoint from Hugging Face.
@@ -74,9 +74,10 @@ That is the whole setup. The script is idempotent: the second run skips every in
 ```text
 ./run.sh [options] [-- router args]
 
-  (default)       CPU: CPU torch wheel, Laya/CLM on CPU, private CPU-only Ollama on :11435
-  --gpu           GPU: CUDA on Linux/NVIDIA, Metal/MPS on Apple Silicon, Ollama on :11434
-  --cpu           Explicit CPU (same as the default)
+  (default)       GPU: CUDA on Linux/NVIDIA, Metal/MPS on Apple Silicon, Ollama on :11434;
+                  falls back to CPU automatically if no GPU is found
+  --cpu           Force CPU: CPU torch wheel, Laya/CLM on CPU, private CPU-only Ollama on :11435
+  --gpu           Explicit GPU (same as the default)
   --skip-clm      Do not download or serve the 8.25 GB CLM encoder (Tier 3A is skipped)
   --setup-only    Install and download everything, run the preflight doctor, then stop
   --no-setup      Skip installation; start Ollama if needed and route
@@ -90,8 +91,8 @@ Router args (passed through):
 ```
 
 ```bash
-./run.sh --skip-clm                             # the lightest possible run (8 GB laptop)
-./run.sh --gpu --skip-clm                       # GPU without the CLM encoder
+./run.sh --cpu --skip-clm                       # the lightest possible run (8 GB laptop)
+./run.sh --skip-clm                             # GPU without the CLM encoder
 ./run.sh --query "We were billed twice. Refund it today or we cancel." --jsonl decisions.jsonl
 make help                                        # the same flows as make targets
 ```
@@ -154,7 +155,7 @@ flowchart TB
 `./run.sh` routes the seven requests from Appendix B. Reference output from the article's run, on a machine without the 16 GB CLM needs:
 
 ```text
-Device: cpu
+Device: cuda
 CLM branch: skipped (EmbedderError)
 Check status for TXN_99281X    | TIER_1_DETERMINISTIC | handler_transaction_status_lookup | regex_txn_id_v1
 where is my invoice receipt    | TIER_2A_TFIDF        | billing_queue                     | billing p=0.95
@@ -214,7 +215,7 @@ Every knob is an environment variable, read in `src/hybrid_intent_router/config.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `HIR_OLLAMA_URL` | `http://localhost:11434` | Ollama server. The default CPU mode uses a private instance on `:11435`; `--gpu` uses `:11434`. Set it to use a remote server |
+| `HIR_OLLAMA_URL` | `http://localhost:11434` | Ollama server. GPU mode uses `:11434`; CPU mode uses a private instance on `:11435`. Set it to use a remote server |
 | `HIR_DEVICE` | `auto` | Device for Laya and the CLM heads: `auto`, `cuda`, `mps`, `cpu` |
 | `HIR_THRESHOLD` | `0.85` | Calibrated-probability cut-off for Tier 2 and Tier 3C |
 | `HIR_GUARD_THRESHOLD` | `0.80` | Guardrail cut-off. Leans towards recall: a false positive costs a review |
@@ -239,18 +240,18 @@ Laya checkpoints are pinned to the reviewed commits shipped in `laya.PINNED_REVI
 **Setup**
 
 - **`Ollama server ... is 0.3x; need 0.35+` while `ollama --version` looks new.** A system service (Linux systemd, or the macOS app) is still running the old binary. Restart it: `sudo systemctl restart ollama` on Linux, quit and reopen the app on macOS.
-- **Models pulled twice.** The Linux installer's systemd service stores models under `/usr/share/ollama/.ollama/models`. The private CPU instance that `run.sh` starts by default runs as you and uses `~/.ollama/models`. Each server needs its own copy; `run.sh` pulls through whichever server it is about to use.
-- **Where the Ollama logs are.** `run.sh` creates a `.run/` directory in the repo root on every run (gitignored). When it starts the Ollama server itself, the server log goes to `.run/ollama-cpu.log` (default) or `.run/ollama-gpu.log` (`--gpu`). If an Ollama server was already running, `run.sh` reuses it and writes no log, because that server belongs to someone else: on Linux read `journalctl -u ollama`, on macOS `~/.ollama/logs/server.log`. This is common with `--gpu`, since the Ollama installer starts a service on port 11434.
+- **Models pulled twice.** The Linux installer's systemd service stores models under `/usr/share/ollama/.ollama/models`. The private CPU instance that `run.sh --cpu` starts runs as you and uses `~/.ollama/models`. Each server needs its own copy; `run.sh` pulls through whichever server it is about to use.
+- **Where the logs are.** Every run writes its full output to `.run/run-<timestamp>.log` (and `.run/latest.log`) in the repo root. When `run.sh` starts the Ollama server itself, the server log is `.run/ollama-gpu.log` or `.run/ollama-cpu.log`. A server that was already running is not ours to log: `journalctl -u ollama` on Linux, `~/.ollama/logs/server.log` on macOS. [`RUNBOOK.md`](RUNBOOK.md) has the full map.
 - **Port 11434 or 11435 in use by something that is not Ollama.** The script will fail with a pointer to `.run/ollama-<mode>.log`. Free the port, or point `HIR_OLLAMA_URL` at a server you run yourself.
 - **`Could not create a venv` on Debian/Ubuntu.** `sudo apt install python3-venv` (or `python3.12-venv`).
-- **Corporate proxy blocks `download.pytorch.org`.** `TORCH_INDEX_URL=https://pypi.org/simple ./run.sh` installs torch from PyPI instead (larger download, same result).
+- **Corporate proxy blocks `download.pytorch.org`.** `TORCH_INDEX_URL=https://pypi.org/simple ./run.sh --cpu` installs torch from PyPI instead (larger download, same result).
 - **Switching between GPU and CPU.** Each mode has its own venv on purpose. A CPU torch wheel inside a GPU environment does not fail; it silently runs on CPU, which is worse.
 
 **GPU and CPU**
 
 - **Old NVIDIA driver.** The default PyTorch wheel targets CUDA 12.x. If `make check` says torch cannot see a CUDA device, upgrade the driver or set `TORCH_INDEX_URL` to a matching `cuXXX` index and delete `.venv-gpu`.
 - **AMD/ROCm.** Ollama uses your GPU; Laya runs on CPU with the default torch wheel. For ROCm torch, set `TORCH_INDEX_URL` to a ROCm index.
-- **Apple Silicon in the default CPU mode.** Ollama on macOS uses Metal regardless of environment variables. CPU mode moves Laya and CLM to CPU, and Tier 4 sends `num_gpu: 0` per request, but the decision model served over `/v1/systemone` still uses Metal.
+- **Apple Silicon and `--cpu`.** Ollama on macOS uses Metal regardless of environment variables. `--cpu` moves Laya and CLM to CPU, and Tier 4 sends `num_gpu: 0` per request, but the decision model served over `/v1/systemone` still uses Metal.
 - **GPU and CPU numbers differ slightly.** On CUDA and MPS Laya runs under fp16 autocast; on CPU it runs in fp32. Probabilities can shift in the second or third decimal, which matters only for requests sitting right on a threshold.
 
 **Runtime**
@@ -281,7 +282,7 @@ Laya checkpoints are pinned to the reviewed commits shipped in `laya.PINNED_REVI
 
 What to watch at the gateway: decision-record completeness (anything below 100% is an explainability outage), tier intercept ratios (a week-on-week rise in Tier 4 share is an incident), adjudicated shadow disagreement per tier and intent, ECE drift on a labelled sample, and fallback storms when an upstream tier degrades and its abstention rate spikes.
 
-A step-by-step walkthrough of each tier, with commands to probe them one at a time, is in [`DEMO-RUNBOOK.md`](DEMO-RUNBOOK.md).
+Operating the repo (every run command, debugging, where each log lives) is in [`RUNBOOK.md`](RUNBOOK.md). A step-by-step walkthrough of each tier, with commands to probe them one at a time, is in [`DEMO-RUNBOOK.md`](DEMO-RUNBOOK.md).
 
 ---
 
@@ -290,14 +291,16 @@ A step-by-step walkthrough of each tier, with commands to probe them one at a ti
 ```bash
 make test         # every suite this machine can run; the live suite auto-skips without Ollama
 make test-unit    # offline: Tier 1 rules, Tier 2 models, calibration, cascade ordering (model tiers faked)
-make test-live    # the real cascade: run.sh starts Ollama, runs every suite, stops it (make test-live-gpu for GPU)
+make test-live    # the real cascade via run.sh: Ollama started only if needed, every suite, then stopped (make test-live-cpu to force CPU)
+make test-installer  # run.sh end to end against a stand-in Ollama and Laya: 35 checks, no model downloads (Linux)
 make lint         # shellcheck run.sh
 ```
 
 - **`unit`**: the `/cancellation` prefix regression, the input cap, TF-IDF and CatBoost reproducing the article's probabilities and SHAP attribution, ECE and the threshold sweep reproducing the article's numbers, and the cascade contract (guardrail overrides Tier 1, tiers fall through only on abstention, every exit writes a complete record, shadow sampling only on confident upper tiers).
 - **`live`**: the guardrail blocks the privilege-escalation request and every demo request exits with a target and a reason.
+- **Installer scenarios** (`tests/installer/`): the real `run.sh` against a stand-in Ollama that serves the same HTTP endpoints (`/api/tags`, `/v1/systemone` in the TypeSafe SDK's schema, `/api/chat`, `/v1/embeddings`) and a stand-in Laya. It covers install idempotency, GPU-to-CPU fallback, reusing a running server and leaving it alone, stopping a server it started on success, failure, Ctrl-C (a real `^C` through a pseudo-terminal) and SIGTERM with runner children included, `--keep-ollama`, `HIR_OLLAMA_URL`, missing models, a port held by something else, run-log retention and colour stripping, router argument pass-through, and the make targets.
 
-CI (`.github/workflows/ci.yml`) runs the unit suite on Python 3.11 and 3.12, checks the calibration output against the article, and shellchecks `run.sh`.
+CI (`.github/workflows/ci.yml`) runs the unit suite on Python 3.11 and 3.12, checks the calibration output against the article, shellchecks `run.sh`, and runs the installer scenarios.
 
 ---
 
@@ -305,7 +308,7 @@ CI (`.github/workflows/ci.yml`) runs the unit suite on Python 3.11 and 3.12, che
 
 | Path | Role |
 |---|---|
-| `run.sh` | One-click installer and runner. CPU by default, `--gpu` on demand, `--skip-clm` in either mode |
+| `run.sh` | One-click installer and runner. GPU by default with CPU fallback, `--cpu` to force CPU, `--skip-clm` in either mode |
 | `Makefile` | The same flows as named targets (`make help`) |
 | `src/hybrid_intent_router/config.py` | Every knob, read from `HIR_*` environment variables |
 | `src/hybrid_intent_router/records.py` | The decision record every exit writes |
@@ -320,6 +323,8 @@ CI (`.github/workflows/ci.yml`) runs the unit suite on Python 3.11 and 3.12, che
 | `src/hybrid_intent_router/doctor.py` | Preflight checks |
 | `src/hybrid_intent_router/__main__.py` | CLI: demo set, `--query`, `--jsonl` |
 | `tests/` | `unit` and `live` suites |
+| `tests/installer/` | `run.sh` scenarios against a stand-in Ollama and Laya |
+| `RUNBOOK.md` | How to run, debug and find every log |
 | `DEMO-RUNBOOK.md` | Step-by-step walkthrough, tier by tier |
 | `CLAUDE.md` | Context for coding agents working in this repo |
 

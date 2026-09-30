@@ -17,7 +17,7 @@ The runnable companion to Appendix B of the article "Making Intent Routing Expla
 
 ## Layout
 
-- `run.sh` (root): one-click installer and runner. CPU default, `--gpu` on demand, `--skip-clm` in either mode. Keep it shellcheck-clean and idempotent.
+- `run.sh` (root): one-click installer and runner. GPU default with automatic CPU fallback, `--cpu` to force CPU, `--skip-clm` in either mode. Starts Ollama only if none is running; stops only a server it started. Keep it shellcheck-clean and idempotent.
 - `src/hybrid_intent_router/`: the package. `cascade.py` wires tiers; one module per tier; `config.py` holds every `HIR_*` knob.
 - `tests/`: `unit` (offline, model tiers faked) and `live` (auto-skips without Ollama).
 
@@ -26,7 +26,7 @@ The runnable companion to Appendix B of the article "Making Intent Routing Expla
 ```bash
 make test-unit                       # must pass before any commit
 make lint                            # shellcheck run.sh
-./run.sh --skip-clm --test     # full local run on the lightest path
+./run.sh --cpu --skip-clm --test     # full local run on the lightest path
 ```
 
 ## Style

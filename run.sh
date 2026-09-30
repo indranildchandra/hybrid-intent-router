@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # hybrid-intent-router: one command from a clean machine to a routed decision.
 #
-#   ./run.sh            CPU (default): CPU torch wheel, private CPU-only Ollama instance on port 11435.
-#   ./run.sh --gpu      GPU on demand: CUDA on Linux, Metal/MPS on Apple Silicon. Falls back to CPU if no GPU.
+#   ./run.sh            GPU (default): CUDA on Linux, Metal/MPS on Apple Silicon. Falls back to CPU
+#                       automatically when the machine has no usable GPU.
+#   ./run.sh --cpu      Force CPU: CPU torch wheel, private CPU-only Ollama instance on port 11435.
 #   ./run.sh --skip-clm Either mode, without the 8.25 GB CLM encoder.
 #
-# Ollama server logs: .run/ollama-<mode>.log at the repo root, created by this script, written only
-# when this script starts the server itself.
+# Logs, all under .run/ at the repo root (created by this script, gitignored):
+#   run-<timestamp>.log / latest.log   full output of every run (last 20 kept)
+#   ollama-<mode>.log                  Ollama server log, only when this script started the server
+# Ollama: started only if nothing is running on the port; a server this script started is stopped
+# on exit (success, failure, Ctrl-C). A server that was already running is reused and left alone.
 #
 # Idempotent: re-running skips everything already installed, pulled or downloaded.
 set -Eeuo pipefail
@@ -42,10 +46,10 @@ usage() {
 ${B}Usage:${R} ./run.sh [options] [-- router args]
 
 ${B}Modes${R}
-  (default)       CPU: CPU torch wheel, Laya/CLM on CPU, private CPU-only Ollama on port $CPU_PORT.
-  --gpu           GPU: CUDA on Linux/NVIDIA, Metal/MPS on Apple Silicon, Ollama on port $GPU_PORT.
-                  Falls back to CPU if no GPU is found.
-  --cpu           Explicit CPU (same as the default).
+  (default)       GPU: CUDA on Linux/NVIDIA, Metal/MPS on Apple Silicon, Ollama on port $GPU_PORT.
+                  Falls back to CPU automatically if no GPU is found.
+  --cpu           Force CPU: CPU torch wheel, Laya/CLM on CPU, private CPU-only Ollama on port $CPU_PORT.
+  --gpu           Explicit GPU (same as the default).
 
 ${B}Options${R}
   --skip-clm      Do not download or serve the 8.25 GB CLM encoder (Tier 3A is skipped at runtime).
@@ -53,6 +57,7 @@ ${B}Options${R}
   --no-setup      Skip installation; just start Ollama if needed and run the router.
   --test          Run all test suites (unit, plus live against the Ollama this run started).
   --keep-ollama   Leave an Ollama server this script started running after exit.
+                  (A server that was already running is always reused and never stopped.)
   -h, --help      Show this help.
 
 ${B}Router args${R} (anything else is passed to python -m hybrid_intent_router)
@@ -63,17 +68,18 @@ ${B}Router args${R} (anything else is passed to python -m hybrid_intent_router)
 ${B}Examples${R}
   ./run.sh
   ./run.sh --skip-clm
-  ./run.sh --gpu
+  ./run.sh --cpu
   ./run.sh --query "We were billed twice. Refund it today or we cancel." --jsonl decisions.jsonl
 EOF
 }
 
 # ----------------------------------------------------------------------------- arguments
-MODE="cpu"; SKIP_CLM=0; SETUP_ONLY=0; NO_SETUP=0; RUN_TESTS=0; KEEP_OLLAMA=0; PY_ARGS=()
+ORIG_ARGS="$*"
+FORCED_CPU=0; MODE="gpu"; SKIP_CLM=0; SETUP_ONLY=0; NO_SETUP=0; RUN_TESTS=0; KEEP_OLLAMA=0; PY_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --cpu) MODE="cpu" ;;
-    --gpu) MODE="gpu" ;;
+    --cpu) MODE="cpu"; FORCED_CPU=1 ;;
+    --gpu) MODE="gpu"; FORCED_CPU=0 ;;
     --skip-clm) SKIP_CLM=1 ;;
     --setup-only) SETUP_ONLY=1 ;;
     --no-setup) NO_SETUP=1 ;;
@@ -85,6 +91,22 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+# ----------------------------------------------------------------------------- run log
+# Everything this script and the router print also lands in .run/run-<timestamp>.log, with
+# .run/latest.log pointing at the newest one. tee ignores INT/TERM so that on Ctrl-C it stays
+# alive long enough to record the cleanup (and the cleanup never dies on a broken pipe).
+RUN_LOG="$STATE_DIR/run-$(date +%Y%m%d-%H%M%S).log"
+if command -v perl >/dev/null 2>&1; then  # colours on the terminal, plain text in the file
+  exec > >(trap '' INT TERM HUP; exec tee >(exec perl -pe 'BEGIN { $| = 1 } s/\e\[[0-9;]*m//g' >>"$RUN_LOG")) 2>&1
+else
+  exec > >(trap '' INT TERM HUP; exec tee -a "$RUN_LOG") 2>&1
+fi
+ln -sf "$(basename "$RUN_LOG")" "$STATE_DIR/latest.log"
+# keep the 20 most recent run logs
+# shellcheck disable=SC2012
+ls -1t "$STATE_DIR"/run-*.log 2>/dev/null | tail -n +21 | while read -r old; do rm -f "$old"; done
+echo "# run.sh $ORIG_ARGS | $(date -u +%Y-%m-%dT%H:%M:%SZ) | commit $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
 # ----------------------------------------------------------------------------- utilities
 version_ge() {  # version_ge 0.35.1 0.35.0 -> true
@@ -118,7 +140,7 @@ elif have nvidia-smi && nvidia-smi -L >/dev/null 2>&1; then
 fi
 RAM_GB="$(ram_gb)"
 if [[ "$MODE" == "gpu" && "$GPU_KIND" == "none" ]]; then
-  warn "GPU mode requested but no NVIDIA GPU (nvidia-smi) or Apple Silicon found. Falling back to CPU."
+  warn "No NVIDIA GPU (nvidia-smi) or Apple Silicon found. Falling back to CPU (same as --cpu)."
   warn "AMD/ROCm users: Ollama will still use your GPU; Laya runs on CPU with the default torch wheel."
   MODE="cpu"
 fi
@@ -145,7 +167,8 @@ find_python() {
   done
   return 1
 }
-VENV="$ROOT/.venv-$MODE"   # separate envs: a CPU torch wheel in a GPU env silently runs on CPU
+VENV="$ROOT/.venv-$MODE"
+PIP=()   # separate envs: a CPU torch wheel in a GPU env silently runs on CPU
 PY="$VENV/bin/python"
 
 setup_python() {
@@ -158,37 +181,27 @@ setup_python() {
   fi
   local stamp_file="$VENV/.hir-stamp"
   local stamp
-  stamp="$(cat "$ROOT/requirements.txt" <(echo "$MODE|$torch_index|$SKIP_CLM|$CLM_GIT") | cksum | awk '{print $1}')"
+  stamp="$(cat "$ROOT/requirements.txt" <(echo "$MODE|$torch_index") | cksum | awk '{print $1}')"
   if [[ -x "$PY" && -f "$stamp_file" && "$(cat "$stamp_file")" == "$stamp" ]]; then
     ok "dependencies already installed"
     return
   fi
 
-  local -a pip
   if have uv; then
     [[ -x "$PY" ]] || uv venv -q --python "$base" "$VENV"
-    pip=(uv pip install -q --python "$PY")
+    PIP=(uv pip install -q --python "$PY")
   else
     if [[ ! -x "$PY" ]]; then
       "$base" -m venv "$VENV" 2>/dev/null || die "Could not create a venv. On Debian/Ubuntu: sudo apt install python3-venv"
     fi
     "$PY" -m pip install -q --upgrade pip
-    pip=("$PY" -m pip install -q)
+    PIP=("$PY" -m pip install -q)
   fi
 
   log "Installing torch ($([[ -n "$torch_index" ]] && echo "$torch_index" || echo "default wheel"))"
-  if [[ -n "$torch_index" ]]; then "${pip[@]}" torch --index-url "$torch_index"; else "${pip[@]}" torch; fi
+  if [[ -n "$torch_index" ]]; then "${PIP[@]}" torch --index-url "$torch_index"; else "${PIP[@]}" torch; fi
   log "Installing requirements"
-  "${pip[@]}" -r "$ROOT/requirements.txt" pytest
-  if [[ "$SKIP_CLM" == "0" ]]; then
-    if have git; then
-      # --no-deps: CLM lists vLLM as a dependency; the Ollama-served encoder does not need it
-      log "Installing CLM client (no vLLM)"
-      "${pip[@]}" --no-deps "$CLM_GIT" || warn "CLM client install failed; Tier 3A will be skipped."
-    else
-      warn "git not found; skipping the CLM client. Tier 3A will be skipped."
-    fi
-  fi
+  "${PIP[@]}" -r "$ROOT/requirements.txt" pytest
   echo "$stamp" > "$stamp_file"
   ok "Python dependencies installed"
 }
@@ -216,13 +229,40 @@ check_client_version() {
   fi
 }
 
+# Ownership rule: a server this script finds already running is never touched. A server this
+# script starts is stopped on every exit path (success, failure, Ctrl-C, kill), runners included.
 OLLAMA_PID=""
+
+stop_pid_tree() {  # graceful TERM, then KILL anything left, including model runner children
+  local pid="$1" children=""
+  have pgrep && children="$(pgrep -P "$pid" 2>/dev/null || true)"
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+  local c
+  for c in $children; do kill -KILL "$c" 2>/dev/null || true; done
+  return 0
+}
+
 cleanup() {
-  if [[ -n "$OLLAMA_PID" && "$KEEP_OLLAMA" == "0" ]]; then
-    kill "$OLLAMA_PID" 2>/dev/null || true
+  local status=$?
+  trap - EXIT INT TERM
+  if [[ -n "$OLLAMA_PID" ]] && kill -0 "$OLLAMA_PID" 2>/dev/null; then
+    if [[ "$KEEP_OLLAMA" == "1" ]]; then
+      log "Leaving the Ollama server this run started (pid $OLLAMA_PID) running (--keep-ollama). Stop it with: kill $OLLAMA_PID"
+    else
+      log "Stopping the Ollama server this run started (pid $OLLAMA_PID) to free its memory"
+      stop_pid_tree "$OLLAMA_PID"
+    fi
   fi
+  exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
 
 start_ollama() {
   local port="$1"
@@ -230,8 +270,9 @@ start_ollama() {
   if [[ -n "${HIR_OLLAMA_URL:-}" ]]; then
     url="${HIR_OLLAMA_URL%/}"
     http_ok "$url/api/version" || die "HIR_OLLAMA_URL=$url is not reachable."
+    ok "using Ollama at $url (HIR_OLLAMA_URL): not managed by this script"
   elif http_ok "$url/api/version"; then
-    ok "reusing Ollama already running on :$port"
+    ok "Ollama already running on :$port: reusing it, and leaving it running afterwards"
   else
     log "Starting Ollama on :$port ($MODE), logging to $STATE_DIR/ollama-$MODE.log"
     if [[ "$MODE" == "cpu" ]]; then
@@ -286,7 +327,14 @@ setup_clm() {
     return
   fi
   if ! "$PY" -c "import clm" 2>/dev/null; then
-    export HIR_DISABLE_CLM=1; warn "CLM client not installed; skipping Tier 3A."; return
+    if ! have git; then
+      export HIR_DISABLE_CLM=1; warn "git not found, so the CLM client cannot be installed; skipping Tier 3A."; return
+    fi
+    # --no-deps: CLM lists vLLM as a dependency; the Ollama-served encoder does not need it
+    log "Installing CLM client (no vLLM)"
+    if have uv; then PIP=(uv pip install -q --python "$PY"); else PIP=("$PY" -m pip install -q); fi
+    "${PIP[@]}" --no-deps "$CLM_GIT" 2>"$STATE_DIR/clm-install.log" \
+      || { export HIR_DISABLE_CLM=1; warn "CLM client install failed; skipping Tier 3A. Details: $STATE_DIR/clm-install.log"; return; }
   fi
   if model_present "$CLM_MODEL"; then
     ok "model $CLM_MODEL"
@@ -300,7 +348,7 @@ setup_clm() {
         warn "CLM needs ~${CLM_MIN_DISK_GB} GB free disk (found ${free} GB). Skipping Tier 3A."; return
       fi
       log "Downloading CLM encoder ($CLM_GGUF_REPO/$CLM_GGUF_FILE, 8.25 GB, resumable)"
-      "$PY" - "$CLM_GGUF_REPO" "$CLM_GGUF_FILE" "$dir" <<'PYEOF' || { export HIR_DISABLE_CLM=1; warn "CLM download failed; skipping Tier 3A."; return; }
+      "$PY" - "$CLM_GGUF_REPO" "$CLM_GGUF_FILE" "$dir" 2>"$STATE_DIR/clm-download.log" <<'PYEOF' || { export HIR_DISABLE_CLM=1; warn "CLM download failed ($(tail -n 1 "$STATE_DIR/clm-download.log" | cut -c1-120)); skipping Tier 3A. Details: $STATE_DIR/clm-download.log"; return; }
 import sys
 from huggingface_hub import hf_hub_download
 hf_hub_download(repo_id=sys.argv[1], filename=sys.argv[2], local_dir=sys.argv[3])
@@ -314,7 +362,7 @@ PYEOF
   fi
   if [[ ! -f "$CLM_HEADS" ]]; then
     log "Downloading CLM projection heads into ${CLM_HEADS%/*}"
-    "$VENV/bin/clm-download" >/dev/null || { export HIR_DISABLE_CLM=1; warn "clm-download failed; skipping Tier 3A."; return; }
+    "$VENV/bin/clm-download" >/dev/null 2>"$STATE_DIR/clm-download.log" || { export HIR_DISABLE_CLM=1; warn "clm-download failed; skipping Tier 3A. Details: $STATE_DIR/clm-download.log"; return; }
   fi
   ok "CLM projection heads"
 }
@@ -322,8 +370,8 @@ PYEOF
 # ----------------------------------------------------------------------------- 5. laya warm-up
 warm_laya() {
   log "Fetching pinned Laya checkpoint (first run downloads from Hugging Face)"
-  HIR_DEVICE="$HIR_DEVICE" "$PY" -c "from hybrid_intent_router.system_one import laya; laya().load('english')" \
-    || die "Laya checkpoint download failed. Check access to huggingface.co (set HF_TOKEN if rate-limited)."
+  HIR_DEVICE="$HIR_DEVICE" "$PY" -c "from hybrid_intent_router.system_one import laya; laya().load('english')" 2>"$STATE_DIR/laya-download.log" \
+    || die "Laya checkpoint download failed ($(tail -n 1 "$STATE_DIR/laya-download.log" | cut -c1-120)). Check access to huggingface.co (HF_TOKEN if rate-limited). Details: $STATE_DIR/laya-download.log"
   ok "Laya checkpoint cached"
 }
 
@@ -337,7 +385,7 @@ if [[ "$NO_SETUP" == "0" ]]; then
   install_ollama
   check_client_version
 fi
-[[ -x "$PY" ]] || die "No environment at $VENV. Run ./run.sh$([[ "$MODE" == "gpu" ]] && echo " --gpu") without --no-setup first."
+[[ -x "$PY" ]] || die "No environment at $VENV. Run ./run.sh$([[ "$FORCED_CPU" == "1" ]] && echo " --cpu") without --no-setup first."
 have ollama || die "Ollama is not installed. Run without --no-setup."
 
 if [[ "$MODE" == "cpu" ]]; then start_ollama "$CPU_PORT"; else start_ollama "$GPU_PORT"; fi
@@ -355,12 +403,12 @@ log "Preflight"
 "$PY" -m hybrid_intent_router.doctor || die "Preflight failed (see above)."
 
 if [[ "$RUN_TESTS" == "1" ]]; then
-  log "Unit tests"
-  "$PY" -m pytest -q "$ROOT/tests"
+  log "Tests (unit, plus live against this Ollama)"
+  "$PY" -m pytest "$ROOT/tests"
 fi
 
 if [[ "$SETUP_ONLY" == "1" ]]; then
-  ok "Setup complete. Run ./run.sh$([[ "$MODE" == "gpu" ]] && echo " --gpu") --no-setup to route."
+  ok "Setup complete. Run ./run.sh$([[ "$FORCED_CPU" == "1" ]] && echo " --cpu") --no-setup to route."
   exit 0
 fi
 
