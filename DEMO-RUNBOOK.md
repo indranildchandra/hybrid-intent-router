@@ -118,12 +118,25 @@ Talking point: remove the guardrail and this request falls through TF-IDF and La
 ## 5. Tier 3B: decompose the decision into typed questions
 
 ```bash
+./run.sh --no-setup --query "We were billed twice. Refund it today or we cancel."
+```
+
+TF-IDF scores this 0.65 for billing and abstains, so it reaches Laya. Laya answers three questions in one forward pass: which department (a choice), how urgent (a score), and whether the customer is threatening to leave (a noul, a calibrated yes/no). The policy in `system_one.py` then decides: billing with churn risk at or above 0.70 goes to `retention_billing_queue`; otherwise a department above 0.90 gets its queue; otherwise the tier abstains.
+
+Expected exit: `TIER_3B_SYSTEM_ONE`. The target depends on the churn number. In the article's run Laya scored churn at 0.53 with billing at 0.97, which routes to `billing_queue` (`department=billing at p=0.97 >= 0.90`); a churn score of 0.70 or more routes to `retention_billing_queue`. Either is a correct outcome of the policy; the reason field tells you which rule fired.
+
+Now add the invoice number:
+
+```bash
 ./run.sh --no-setup --query "We were billed twice for invoice #99281. Refund it today or we cancel."
 ```
 
-Laya answers three questions in one forward pass: which department (a choice), how urgent (a score), and whether the customer is threatening to leave (a noul, a calibrated yes/no). The policy in `system_one.py` then decides: billing with churn risk at or above 0.70 goes to `retention_billing_queue`; otherwise a department above 0.90 gets its queue; otherwise the tier abstains.
+Expected exit: `TIER_2A_TFIDF | billing_queue | billing p=0.85`. The word "invoice" lifts TF-IDF to 0.854, just over the 0.85 threshold, and the churn question is never asked.
 
-Talking point: the route is a function of three auditable numbers instead of one opaque label, and the rule that fired is written into the record. Change the policy, bump `HIR_POLICY_VERSION`, and every record says which rules it was decided under.
+Talking points:
+
+- The route is a function of three auditable numbers instead of one opaque label, and the rule that fired is written into the record. Change the policy, bump `HIR_POLICY_VERSION`, and every record says which rules it was decided under.
+- The invoice variant is the cascade's known blind spot, in miniature. A confident upper tier is right about the department and still misses the churn threat, and nothing below it gets a chance to disagree. That is what shadow sampling (section 9) exists to catch, and why the Tier 2 threshold is a product decision, not a default.
 
 ---
 

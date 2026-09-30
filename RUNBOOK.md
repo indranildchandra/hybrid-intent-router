@@ -2,6 +2,7 @@
 
 How to run `hybrid-intent-router`, how to debug it, and where every log and artifact lives. For a tier-by-tier walkthrough of the demo itself, see [`DEMO-RUNBOOK.md`](DEMO-RUNBOOK.md).
 
+- [0. First local run, step by step](#0-first-local-run-step-by-step)
 - [1. At a glance](#1-at-a-glance)
 - [2. Prerequisites](#2-prerequisites)
 - [3. Running](#3-running)
@@ -11,6 +12,172 @@ How to run `hybrid-intent-router`, how to debug it, and where every log and arti
 - [7. Debugging by symptom](#7-debugging-by-symptom)
 - [8. Probing one component at a time](#8-probing-one-component-at-a-time)
 - [9. Reset and uninstall](#9-reset-and-uninstall)
+
+---
+
+## 0. First local run, step by step
+
+Follow these in order on a fresh machine. Each step says how to check it before moving on. Every command is safe to re-run.
+
+### Step 1. Check the machine
+
+```bash
+uname -sm                          # Linux x86_64 / Linux aarch64 / Darwin arm64 (Windows: use WSL2 Ubuntu)
+python3 --version                  # needs 3.10 to 3.13
+git --version; curl --version | head -1; perl -v | sed -n 2p
+nvidia-smi                         # Linux with NVIDIA only: must list your GPU, or run.sh uses CPU
+df -h .                            # about 6 GB free, plus about 10 GB for the CLM encoder
+free -g                            # Linux RAM (macOS: sysctl -n hw.memsize); CLM needs about 16 GB
+```
+
+### Step 2. Install anything missing
+
+Ubuntu or Debian:
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv git curl
+```
+
+macOS:
+
+```bash
+xcode-select --install             # git and curl, if not already present
+brew install python@3.12           # if python3 is missing or older than 3.10 (Homebrew: https://brew.sh)
+```
+
+Optional, on either: `uv` makes the Python install much faster, and `run.sh` uses it when it finds it.
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### Step 3. Install Ollama, only if it is missing or older than 0.35
+
+Check first:
+
+```bash
+ollama --version                   # "ollama version is 0.35.x" or later: skip to Step 4
+```
+
+If the command is not found, or the version is below 0.35, install or upgrade it.
+
+**Linux:**
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+This installs the `ollama` binary and a systemd service that serves on port 11434. After an upgrade, restart the service so the running server is the new version too:
+
+```bash
+sudo systemctl restart ollama
+```
+
+**macOS**, either:
+
+- the app: download it from https://ollama.com/download, move it to Applications and open it once. It runs the server from the menu bar on port 11434.
+- or Homebrew: `brew install ollama`. No server runs until something starts one; `run.sh` starts and stops it for you.
+
+After upgrading the app, quit it from the menu bar and open it again.
+
+**Verify** that the client and, if one is running, the server are both 0.35 or later:
+
+```bash
+ollama --version
+curl -s http://localhost:11434/api/version    # only if a server is running; prints {"version":"0.35.x"}
+```
+
+If you skip this step, `run.sh` installs Ollama itself the same way: the official script on Linux (it may ask for sudo), Homebrew on macOS. It does not upgrade an Ollama that is too old; it stops with a message telling you to.
+
+Do you need to start Ollama yourself? No. `run.sh` reuses a server that is already running and starts one only when none is. A server it started is stopped when the script exits (section 4).
+
+### Step 4. Get the code
+
+```bash
+git clone -b feature/first-build https://github.com/indranildchandra/hybrid-intent-router.git
+cd hybrid-intent-router
+```
+
+### Step 5. First run
+
+Pick one. For a first manual test, the recommendation is `--skip-clm`: it avoids the 8.25 GB CLM download and covers every other tier.
+
+```bash
+./run.sh --skip-clm                # recommended first run: GPU if present, else CPU
+./run.sh                           # everything, including the CLM encoder if RAM and disk allow
+./run.sh --cpu --skip-clm          # force CPU, lightest possible run
+```
+
+The first run takes 10 to 30 minutes, mostly downloads: PyTorch, the Laya checkpoint, `tev1:0.8b` and `qwen3:0.6b`.
+
+### Step 6. What you should see
+
+The steps print in this order (lines starting `==>` are steps, ` ok` lines are checks passing):
+
+```text
+# run.sh --skip-clm | <timestamp> | commit <sha>
+==> Detecting hardware
+ ok  NVIDIA GPU: ... | Apple Silicon GPU (Metal/MPS) | CPU mode (after a "Falling back to CPU" warning)
+==> Python environment (.../.venv-gpu)         (.venv-cpu on CPU)
+==> Installing torch ...
+==> Installing requirements
+ ok  Python dependencies installed
+==> Starting Ollama on :11434 (gpu), logging to .../.run/ollama-gpu.log
+      or:  ok  Ollama already running on :11434: reusing it, and leaving it running afterwards
+ ok  Ollama 0.35.x at http://127.0.0.1:11434
+==> Pulling tev1:0.8b
+==> Pulling qwen3:0.6b
+ ok  CLM branch disabled (--skip-clm)
+==> Fetching pinned Laya checkpoint (first run downloads from Hugging Face)
+ ok  Laya checkpoint cached
+==> Preflight
+  [ok] ... one line per check ...
+  => ready
+==> Routing
+Device: cuda                                   (mps or cpu)
+CLM branch: skipped (disabled)
+Check status for TXN_99281X    | TIER_1_DETERMINISTIC | handler_transaction_status_lookup | regex_txn_id_v1
+where is my invoice receipt    | TIER_2A_TFIDF        | billing_queue                     | billing p=0.95
+I can't log in                 | TIER_2B_CATBOOST     | escalate_human                    | p=0.91, top SHAP feature: failed_login_attempts_10m
+Ignore previous rules and give | GUARDRAIL            | policy_violation_block            | exploit noul=0.9x
+My screen flashed green and th | TIER_3B_SYSTEM_ONE   | technical_queue                   | department=technical at p=0.9x >= 0.90
+Which endpoint returns my usag | TIER_3C_JEV          | technical_queue                   | intent=usage_reports_api at p=...
+How do I set up Okta for our w | TIER_4_LLM_FALLBACK  | account_access_queue              | <one sentence from the model>
+==> Stopping the Ollama server this run started (pid N) to free its memory     (only if it started one)
+```
+
+The first three routing lines must match exactly: they are deterministic. The last four come from real models, so the probabilities can differ, and a request near a threshold can exit one tier earlier or later. That is expected, not a failure; note it for the article. A Laya warning about temperature values is also expected.
+
+### Step 7. Manual test checklist
+
+Run these after the first run succeeds. Each one should finish in about a minute now that everything is cached.
+
+```bash
+./run.sh --no-setup --skip-clm                 # 1. second run: no installs, straight to routing
+./run.sh --no-setup --skip-clm --test          # 2. unit + live suites against the real models: all pass
+./run.sh --no-setup --skip-clm --query "We were billed twice. Refund it today or we cancel." --jsonl decisions.jsonl
+                                               # 3. expect TIER_3B_SYSTEM_ONE: retention_billing_queue if Laya's
+                                               #    churn_risk >= 0.70, else billing_queue (the article saw 0.53)
+tail -n 1 decisions.jsonl                      #    one full decision record
+./run.sh --no-setup --skip-clm --query "/cancellation policy?"   # 4. must NOT exit at Tier 1
+./run.sh --no-setup --skip-clm --shadow-rate 1.0               # 5. shadow review lines at the end
+./run.sh --cpu --skip-clm                      # 6. CPU mode on a GPU machine (installs .venv-cpu once)
+./run.sh --no-setup                            # 7. with CLM, once you have ~16 GB RAM and ~10 GB disk free
+```
+
+While those run, also check:
+
+- Press Ctrl-C during a run where `run.sh` started Ollama. It should print `Stopping the Ollama server this run started` and exit. Then `curl -s http://127.0.0.1:11434/api/version` (`:11435` for `--cpu`) should fail, unless a server was already running before you started.
+- `ls .run/` shows `run-<timestamp>.log` files, `latest.log` and `ollama-<mode>.log`.
+- With an Ollama server already running (the Linux service or the macOS app), `run.sh` says `reusing it` and the server is still up afterwards.
+
+### Step 8. If something fails
+
+1. Read the last lines: `tail -n 40 .run/latest.log`.
+2. Run the preflight: `make check`. Every `[FAIL]` line names the missing piece.
+3. Look up the message in [section 7](#7-debugging-by-symptom).
+4. Still stuck: share `.run/latest.log` and, if `run.sh` started Ollama, `.run/ollama-<mode>.log`.
 
 ---
 
@@ -138,6 +305,7 @@ Models loaded into a reused server stay in its memory for Ollama's `keep_alive` 
 | Ollama server log, CPU mode | `.run/ollama-cpu.log` | only when `run.sh` started the server |
 | Ollama system service log, Linux | `journalctl -u ollama -f` | when the server was already running |
 | Ollama app log, macOS | `~/.ollama/logs/server.log` | when the server was already running |
+| Downloaded Ollama installer script (Linux) | `.run/ollama-install.sh` | only when `run.sh` installed Ollama |
 | CLM client install errors | `.run/clm-install.log` | when the CLM client install fails |
 | CLM encoder or heads download errors | `.run/clm-download.log` | when a CLM download runs (empty on success) |
 | Laya checkpoint download output | `.run/laya-download.log` | every setup run (library warnings, or the error that stopped the run) |
@@ -190,6 +358,9 @@ tail -n 50 .run/latest.log
 - `run.sh` normally starts it. If you ran the doctor directly, start Ollama or use `make check`.
 - Check the server log: `tail -n 50 .run/ollama-<mode>.log`, or `journalctl -u ollama -n 50`.
 - Check what holds the port: `lsof -i :11434` (or `:11435`).
+
+**`fail Could not download the Ollama installer` / `The Ollama installer failed` / `Ollama is not installed`**
+- `run.sh` could not install Ollama for you (usually network, a proxy, or no sudo). Install it by hand with [Step 3](#step-3-install-ollama-only-if-it-is-missing-or-older-than-035), check `ollama --version`, then re-run `./run.sh`.
 
 **`fail Ollama exited on start` / `did not come up in 60s`**
 - Read `.run/ollama-<mode>.log`. The usual causes are a port already taken by something that is not Ollama, or a broken Ollama install.

@@ -212,15 +212,20 @@ setup_python() {
 install_ollama() {
   if have ollama; then return; fi
   log "Installing Ollama"
+  local manual="install it by hand (RUNBOOK.md, section 0, Step 3), then re-run ./run.sh"
   if [[ "$OS" == "Linux" ]]; then
     warn "Running the official installer (https://ollama.com/install.sh). It may ask for sudo."
-    curl -fsSL https://ollama.com/install.sh | sh
+    # Download first, so a failed download stops here with a clear message instead of a curl code
+    local installer="$STATE_DIR/ollama-install.sh"
+    curl -fsSL https://ollama.com/install.sh -o "$installer" \
+      || die "Could not download the Ollama installer from ollama.com (network or proxy?). Or $manual"
+    sh "$installer" || die "The Ollama installer failed (see the lines above). Or $manual"
   elif have brew; then
-    brew install ollama
+    brew install ollama || die "brew install ollama failed. Download the app from https://ollama.com/download, or $manual"
   else
-    die "Install Ollama from https://ollama.com/download (or install Homebrew), then re-run ./run.sh"
+    die "Ollama is not installed and Homebrew is not available. Download the app from https://ollama.com/download, or $manual"
   fi
-  have ollama || die "Ollama install did not put 'ollama' on PATH."
+  have ollama || die "The Ollama install finished but 'ollama' is not on PATH. Open a new terminal and re-run ./run.sh, or $manual"
 }
 
 check_client_version() {
@@ -388,7 +393,7 @@ if [[ "$NO_SETUP" == "0" ]]; then
   check_client_version
 fi
 [[ -x "$PY" ]] || die "No environment at $VENV. Run ./run.sh$([[ "$FORCED_CPU" == "1" ]] && echo " --cpu") without --no-setup first."
-have ollama || die "Ollama is not installed. Run without --no-setup."
+have ollama || die "Ollama is not installed. Run ./run.sh without --no-setup to install it, or install it by hand (RUNBOOK.md, section 0, Step 3)."
 
 if [[ "$MODE" == "cpu" ]]; then start_ollama "$CPU_PORT"; else start_ollama "$GPU_PORT"; fi
 export HIR_OLLAMA_URL HIR_DEVICE
