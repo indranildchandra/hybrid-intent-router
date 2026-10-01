@@ -5,6 +5,11 @@ embedded once and cached; each request costs one state pass plus a similarity op
 no cross-attention, so "cancel my order" and "do not cancel my order" can land close together.
 The top-2 margin is the explanation, and a small margin hands off to Tier 3B.
 
+CLM is a branch, not a cheaper step before Laya: every call is a full 8B forward pass. So it only
+runs when a cheap, deterministic signal says the request concerns its catalog (CATALOG_SCOPE, the
+catalog's own vocabulary); every other request goes straight to Laya. In production the signal can
+also come from where the request was made, such as a docs page or an API console.
+
 The candidates are short page descriptions, the plain answer text the action head is trained on, plus
 an explicit "none of these". CLM's probabilities are a softmax over the candidates, so without that
 option a request no page answers (an Okta setup question) still gets a confident winner; with it,
@@ -15,7 +20,8 @@ through Ollama's native /api/embed (see ollama_embedder).
 When it is not served, this branch is skipped instead of failing the cascade.
 """
 import os
-from typing import Optional, Tuple
+import re
+from typing import Any, Dict, Optional, Tuple
 
 from .config import CLM_MARGIN, CLM_MODEL, DISABLE_CLM, OLLAMA, torch_device
 
@@ -29,6 +35,16 @@ CATALOG = {  # page id -> what the action head embeds
 NONE_OF_THESE = "none_of_these"
 CANDIDATES = {**CATALOG, NONE_OF_THESE: "None of these: not a question about the developer API docs"}
 QUESTION = "Which documentation page answers this?"
+
+# The gate in front of the 8B pass: words the catalog is about. A miss costs nothing, the request
+# just goes to Laya; a hit can still end in "none of these".
+CATALOG_SCOPE = re.compile(
+    r"\b(apis?|endpoints?|webhooks?|tokens?|rate[- ]limits?|quotas?|http\s*[1-5]\d\d|sdk|docs?|documentation)\b",
+    re.IGNORECASE)
+
+
+def in_catalog_scope(query: str) -> bool:
+    return CATALOG_SCOPE.search(query) is not None
 
 
 def ollama_embedder():
@@ -83,12 +99,14 @@ def load_clm():
         return None, f"skipped ({type(exc).__name__}{': ' + detail if detail else ''})"
 
 
-def tier3a(engine, query: str) -> Tuple[Optional[str], str]:
+def tier3a(engine, query: str) -> Tuple[Optional[str], str, Dict[str, Any]]:
+    """Returns (page or None, reason, answers): the full distribution over the candidates."""
     ids, texts = list(CANDIDATES), list(CANDIDATES.values())
     ranked = [(ids[texts.index(r["candidate"])], r["prob"])
               for r in engine.rank(query, texts, instructions=QUESTION)]
     (top, p1), (second, p2) = ranked[0], ranked[1]
+    answers = {"page": {"choice": top, "probabilities": {k: round(float(p), 4) for k, p in ranked}}}
     if top == NONE_OF_THESE:
-        return None, f"out of catalog: {NONE_OF_THESE} p={p1:.2f} over {second} p={p2:.2f}"
+        return None, f"out of catalog: {NONE_OF_THESE} p={p1:.2f} over {second} p={p2:.2f}", answers
     why = f"top-2 margin {p1 - p2:.2f} over {second}"
-    return (top if p1 - p2 >= CLM_MARGIN else None), why
+    return (top if p1 - p2 >= CLM_MARGIN else None), why, answers

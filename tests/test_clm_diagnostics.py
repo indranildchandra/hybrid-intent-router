@@ -88,18 +88,34 @@ class _Engine:
 
 
 def test_tier3a_routes_a_clear_winner():
-    target, why = tier3a_clm.tier3a(_Engine([("docs_rate_limits", 0.89), ("none_of_these", 0.06)]), "q")
+    target, why, answers = tier3a_clm.tier3a(_Engine([("docs_rate_limits", 0.89), ("none_of_these", 0.06)]), "q")
     assert target == "docs_rate_limits"
     assert why == "top-2 margin 0.83 over none_of_these"
+    assert answers == {"page": {"choice": "docs_rate_limits",
+                                "probabilities": {"docs_rate_limits": 0.89, "none_of_these": 0.06}}}
 
 
 def test_tier3a_abstains_when_no_page_answers():
     # A softmax over pages alone would hand the Okta question to some page; "none of these" lets CLM say no
-    target, why = tier3a_clm.tier3a(_Engine([("none_of_these", 0.86), ("docs_auth_tokens", 0.07)]), "q")
+    target, why, _ = tier3a_clm.tier3a(_Engine([("none_of_these", 0.86), ("docs_auth_tokens", 0.07)]), "q")
     assert target is None
     assert why == "out of catalog: none_of_these p=0.86 over docs_auth_tokens p=0.07"
 
 
 def test_tier3a_abstains_on_a_tie():
-    target, why = tier3a_clm.tier3a(_Engine([("docs_billing_api", 0.46), ("docs_webhooks", 0.41)]), "q")
+    target, why, _ = tier3a_clm.tier3a(_Engine([("docs_billing_api", 0.46), ("docs_webhooks", 0.41)]), "q")
     assert target is None and why == "top-2 margin 0.05 over docs_webhooks"
+
+
+@pytest.mark.parametrize("query, in_scope", [
+    ("Why am I getting HTTP 429 responses?", True),
+    ("Which endpoint returns my usage report?", True),
+    ("How do I rotate my API token?", True),
+    ("How do I register a webhook endpoint?", True),
+    ("What are the API rate limits?", True),
+    ("How do I set up Okta for our workspace?", False),
+    ("My screen flashed green and the app uninstalled itself", False),
+    ("We were billed twice. Refund it today or we cancel.", False),
+])
+def test_catalog_scope_gates_the_8b_pass(query, in_scope):
+    assert tier3a_clm.in_catalog_scope(query) is in_scope
