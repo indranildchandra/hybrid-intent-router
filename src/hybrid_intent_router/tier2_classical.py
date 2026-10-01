@@ -8,7 +8,6 @@ The training data is deliberately tiny, as in the article. Train on your own tic
 from functools import lru_cache
 from typing import Any, Dict, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 from catboost import CatBoostClassifier, Pool
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -63,21 +62,38 @@ def catboost_model() -> CatBoostClassifier:
     return model
 
 
-def tier2(query: str, meta: Dict[str, Any]) -> Tuple[Optional[str], float, str, str]:
-    """Returns (target, confidence, tier, reason). The caller applies the threshold."""
+def _catboost_decision(query: str, meta: Dict[str, Any]):
+    """-> (label, probability, {feature: SHAP value} for the predicted class, {label: probability})."""
+    cat = catboost_model()
+    x = pd.DataFrame([{"query_text": query, "user_tier": meta.get("user_tier", "Free"),
+                       "failed_login_attempts_10m": meta.get("failed_logins", 0)}])
+    probs = cat.predict_proba(x)[0]
+    i = int(probs.argmax())
+    # Per-decision SHAP attributions for the predicted class, straight from CatBoost
+    shap = cat.get_feature_importance(Pool(x, text_features=["query_text"], cat_features=["user_tier"]),
+                                      type="ShapValues")[0][i][:-1]
+    dist = {str(c): round(float(v), 4) for c, v in zip(cat.classes_, probs)}
+    return cat.classes_[i], float(probs[i]), dict(zip(x.columns, (float(v) for v in shap))), dist
+
+
+def shap_values(query: str, meta: Dict[str, Any]) -> Dict[str, float]:
+    """What each feature contributed to the CatBoost decision, rounded as the article prints them."""
+    return {k: round(v, 3) for k, v in _catboost_decision(query, meta)[2].items()}
+
+
+def tier2(query: str, meta: Dict[str, Any]) -> Tuple[Optional[str], float, str, str, Dict[str, Any]]:
+    """Returns (target, confidence, tier, reason, answers). The caller applies the threshold.
+    `answers` is the full distribution for the decision record, not just the winner."""
     if meta:
-        cat = catboost_model()
-        x = pd.DataFrame([{"query_text": query, "user_tier": meta.get("user_tier", "Free"),
-                           "failed_login_attempts_10m": meta.get("failed_logins", 0)}])
-        probs = cat.predict_proba(x)[0]
-        i = int(probs.argmax())
-        # Per-decision SHAP attributions for the predicted class, straight from CatBoost
-        shap = cat.get_feature_importance(Pool(x, text_features=["query_text"], cat_features=["user_tier"]),
-                                          type="ShapValues")[0][i][:-1]
-        top = x.columns[int(np.argmax(shap))]
-        return cat.classes_[i], float(probs[i]), "TIER_2B_CATBOOST", f"p={probs[i]:.2f}, top SHAP feature: {top}"
+        label, p, shap, dist = _catboost_decision(query, meta)
+        top = max(shap, key=shap.get)
+        answers = {"label": {"choice": str(label), "probabilities": dist,
+                             "shap": {k: round(v, 3) for k, v in shap.items()}}}
+        return label, p, "TIER_2B_CATBOOST", f"p={p:.2f}, top SHAP feature: {top}", answers
     tfidf = tfidf_model()
     probs = tfidf.predict_proba([query])[0]
     i = int(probs.argmax())
     label = tfidf.classes_[i]
-    return TFIDF_TARGET[label], float(probs[i]), "TIER_2A_TFIDF", f"{label} p={probs[i]:.2f}"
+    answers = {"label": {"choice": str(label),
+                         "probabilities": {str(c): round(float(v), 4) for c, v in zip(tfidf.classes_, probs)}}}
+    return TFIDF_TARGET[label], float(probs[i]), "TIER_2A_TFIDF", f"{label} p={probs[i]:.2f}", answers

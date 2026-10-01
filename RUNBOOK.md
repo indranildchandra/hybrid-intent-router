@@ -224,7 +224,7 @@ curl -s -o /dev/null -w "%{http_code}\n" https://registry.ollama.ai/v2/library/q
 ./run.sh --no-setup --skip-clm --test          # 2. unit + live suites against the real models: all pass
 ./run.sh --no-setup --skip-clm --query "We were billed twice. Refund it today or we cancel." --jsonl decisions.jsonl
                                                # 3. expect TIER_3B_LAYA: retention_billing_queue if Laya's
-                                               #    churn_risk >= 0.70, else billing_queue (the article saw 0.53)
+                                               #    churn_risk >= 0.70 (about 0.76), else billing_queue
 tail -n 1 decisions.jsonl                      #    one full decision record
 ./run.sh --no-setup --skip-clm --query "/cancellation policy?"   # 4. must NOT exit at Tier 1
 ./run.sh --no-setup --skip-clm --shadow-rate 1.0               # 5. shadow review lines at the end
@@ -299,7 +299,7 @@ make clean         # caches and logs under .run/
 
 ## 3. Walking through the cascade, tier by tier
 
-Use this to understand what each tier demonstrates, or to walk a team through Appendix B. Expected output is given where it is deterministic. The commands assume the default GPU mode (add `--cpu` to force CPU) and a run without CLM. With the CLM encoder served, every request that reaches Tier 3A is offered to it first: it answers the HTTP 429 documentation question and says "none of these" to the rest, which then exit exactly as below (3.7).
+Use this to understand what each tier demonstrates, or to walk a team through Appendix B. Expected output is given where it is deterministic. The commands assume the default GPU mode (add `--cpu` to force CPU) and a run without CLM. With the CLM encoder served, requests that mention the docs catalog are offered to it first: it answers the HTTP 429 documentation question and says "none of these" to the usage-report question, and everything then exits exactly as below (3.7).
 
 The direct Python calls use the environment the run created, with the code on the path:
 
@@ -342,21 +342,23 @@ Talking point: the middle line. A naive trie walk returns as soon as it reaches 
 ```bash
 $PY -c "
 from hybrid_intent_router.tier2_classical import tier2
-print(tier2('where is my invoice receipt', {}))
-print(tier2(\"I can't log in\", {'user_tier': 'Enterprise', 'failed_logins': 5}))
-print(tier2('My screen flashed green and the app uninstalled itself', {}))"
+print(tier2('where is my invoice receipt', {})[:4])
+print(tier2(\"I can't log in\", {'user_tier': 'Enterprise', 'failed_logins': 5})[:4])
+print(tier2('My screen flashed green and the app uninstalled itself', {})[:4])"
 ```
 
 ```text
 ('billing_queue', 0.948..., 'TIER_2A_TFIDF', 'billing p=0.95')
 ('escalate_human', 0.907..., 'TIER_2B_CATBOOST', 'p=0.91, top SHAP feature: failed_login_attempts_10m')
-('technical_queue', 0.406..., 'TIER_2A_TFIDF', 'bug_report p=0.41')
+('billing_queue', 0.540..., 'TIER_2A_TFIDF', 'billing p=0.54')
 ```
+
+`[:4]` drops the fifth element, the full distribution over every class (plus CatBoost's SHAP values), which is what the decision record stores under `answers`.
 
 Talking points:
 
 - The same sentence, "I can't log in", from a free-tier user with one failed attempt is a password reset. From an Enterprise admin with five failures in ten minutes it is an escalation. The text is identical; the route is not. SHAP says the login counter made the call.
-- The third line is the most important output in this section. At 0.41 the tier abstains and the request falls through. A router that guesses on thin evidence is worse than one that says "not mine". The threshold is what makes a cascade safe.
+- The third line is the most important output in this section. The green-screen message shares almost no tokens with the training set, so TF-IDF's best guess is billing, at 0.54. That guess is wrong, and the threshold is the only thing that stops a billing agent from opening a ticket about a crashed app: the tier abstains and the request falls through. A router that guesses on thin evidence is worse than one that says "not mine". The threshold is what makes a cascade safe.
 
 ### 3.4 The guardrail runs on everything
 
@@ -374,9 +376,9 @@ Talking point: remove the guardrail and this request falls through TF-IDF and La
 ./run.sh --no-setup --query "We were billed twice. Refund it today or we cancel."
 ```
 
-TF-IDF scores this 0.65 for billing and abstains, so it reaches Laya. Laya answers three questions in one forward pass: which department (a choice), how urgent (a score), and whether the customer is threatening to leave (a noul, a calibrated yes/no). The policy in `system_one.py` then decides: billing with churn risk at or above 0.70 goes to `retention_billing_queue`; otherwise a department above 0.90 gets its queue; otherwise the tier abstains.
+TF-IDF scores this 0.65 for billing and abstains, so it reaches Laya. Laya answers three questions in one forward pass: which department (a choice), how urgent (a score), and whether the customer is threatening to leave (a noul, a calibrated yes/no). The `RULES` table in `system_one.py` then decides: billing with churn risk at or above 0.70 goes to `retention_billing_queue` (`churn_priority`); otherwise a department at or above 0.90 gets its queue (`confident_department`); otherwise the tier abstains. An urgency score of 1.5 or more also fires `page_on_call`, which flags the record for paging without changing the queue. The reason joins every rule that fired.
 
-Expected exit: `TIER_3B_LAYA`. The target depends on the churn number. In the article's run Laya scored churn at 0.53 with billing at 0.97, which routes to `billing_queue` (`department=billing at p=0.97 >= 0.90`); a churn score of 0.70 or more routes to `retention_billing_queue`. Either is a correct outcome of the policy; the reason field tells you which rule fired.
+Expected exit: `TIER_3B_LAYA | retention_billing_queue`. Laya scores churn at about 0.76 with billing at 0.99, so both routing rules fire and `churn_priority` wins. Churn sits close to the 0.70 threshold, so on other hardware or checkpoint versions it can land below it; then only `confident_department` fires and the request routes to `billing_queue` (`department=billing at p=0.99 >= 0.90`). Either is a correct outcome of the policy, and the record says which: `rules_fired` lists the rules and the reason reads `billing with churn_risk 0.76 >= 0.70 -> retention_billing_queue; department=billing at p=0.99 >= 0.90`.
 
 Now add the invoice number:
 
@@ -388,7 +390,7 @@ Expected exit: `TIER_2A_TFIDF | billing_queue | billing p=0.85`. The word "invoi
 
 Talking points:
 
-- The route is a function of three auditable numbers instead of one opaque label, and the rule that fired is written into the record. Change the policy, bump `HIR_POLICY_VERSION`, and every record says which rules it was decided under.
+- The route is a function of three auditable numbers instead of one opaque label, and the record keeps all of it: the full `answers`, the `rules_fired` and `page_on_call`. Change the policy, bump `HIR_POLICY_VERSION`, and every record says which rules it was decided under.
 - The invoice variant is the cascade's known blind spot, in miniature. A confident upper tier is right about the department and still misses the churn threat, and nothing below it gets a chance to disagree. That is what shadow sampling (3.9) exists to catch, and why the Tier 2 threshold is a product decision, not a default.
 
 ### 3.6 Tier 3C: Jev for the large catalog
@@ -411,7 +413,9 @@ If `make check` shows `[ok] model clm-encoder`, the dual-encoder is live:
 
 Expected exit: `TIER_3A_CLM | docs_rate_limits | top-2 margin 0.8x over none_of_these`. CLM ranks a small documentation catalog, so its targets are page ids, not queues. Each page is a short description (`src/hybrid_intent_router/tier3a_clm.py`), the plain answer text the action head is trained on.
 
-The catalog also carries a sixth candidate, "None of these: not a question about the developer API docs". CLM's probabilities are a softmax over the candidates, so without it every request gets a winner: the Okta question lands on `docs_webhooks` at a 0.39 margin. With it, CLM picks "none of these" for the green-screen, usage-report and Okta requests (p=0.57 to 0.86), Tier 3A abstains, and they exit at Laya (3.5), Jev (3.6) and Tier 4 (3.8) exactly as without CLM.
+CLM is a branch for its catalog, not a step every request pays for: each call is a full 8B forward pass. A deterministic gate (`CATALOG_SCOPE` in `tier3a_clm.py`) sends it only requests that use the catalog's vocabulary: API, endpoint, webhook, token, rate limit, an HTTP status code, docs. In the demo set that is the HTTP 429 and usage-report questions; the green-screen and Okta requests go straight to Laya.
+
+The catalog also carries a sixth candidate, "None of these: not a question about the developer API docs". CLM's probabilities are a softmax over the candidates, so without it every request it sees gets a winner: offered the Okta question, it lands on `docs_webhooks` at a 0.39 margin. With it, CLM picks "none of these" for the usage-report question (p=0.57), Tier 3A abstains, and Jev resolves it (3.6), exactly as without CLM. The two checks cover different failures: the gate keeps unrelated traffic off the 8B pass, and "none of these" catches a request that uses the vocabulary but is not answered by any page.
 
 Talking points: the action catalog is embedded once and cached, so each request costs one state pass plus a similarity op. The explanation is geometric: winner, runner-up, and the margin between them. "None of these" winning means out of catalog, and a margin below `HIR_CLM_MARGIN` (0.08) is a tie; either way the request goes to the calibrated classifier before anything executes. An absolute similarity floor does not work here: every request, on topic or not, scores a top cosine between 0.26 and 0.32. The known failure mode is negation: without cross-attention, "cancel my order" and "do not cancel my order" can land close together.
 

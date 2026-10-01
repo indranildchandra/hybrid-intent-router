@@ -6,7 +6,7 @@ tev1 model behind the same /v1/systemone API, so the official TypeSafe SDK works
 Moving to managed Jev is configuration, not code: HIR_USE_TYPESAFE=1 plus TYPESAFE_API_KEY.
 """
 from functools import lru_cache
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from .config import JEV_MODEL, OLLAMA, THRESHOLD, TYPESAFE_MODEL, USE_TYPESAFE
 
@@ -58,8 +58,8 @@ def jev():
     return TypeSafeClient(base_url=OLLAMA, api_key="ollama", model=JEV_MODEL, timeout=120)
 
 
-def tier3c(query: str) -> Tuple[Optional[str], str, str]:
-    """Returns (target or None, reason, model tag that actually answered)."""
+def tier3c(query: str) -> Tuple[Optional[str], str, str, Dict[str, Any]]:
+    """Returns (target or None, reason, model tag that actually answered, answers)."""
     from typesafe_sdk import Choice
 
     resp = jev().system_one(state={"message": query}, questions={
@@ -69,6 +69,8 @@ def tier3c(query: str) -> Tuple[Optional[str], str, str]:
     runner_up = sorted(a.probabilities.items(), key=lambda kv: -kv[1])[1]
     why = f"intent={a.choice} at p={p:.2f} (next: {runner_up[0]} {runner_up[1]:.2f})"
     model = getattr(resp, "model", None) or (TYPESAFE_MODEL if USE_TYPESAFE else JEV_MODEL)
+    answers = {"intent": {"choice": a.choice,
+                          "probabilities": {k: round(float(v), 4) for k, v in a.probabilities.items()}}}
     if a.choice != "other" and p >= THRESHOLD:
-        return INTENT_QUEUE[a.choice], why, model
-    return None, why, model
+        return INTENT_QUEUE[a.choice], why, model, answers
+    return None, why, model, answers
